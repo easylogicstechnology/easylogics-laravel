@@ -2,7 +2,9 @@
 .DS_Store
 .env
 .env.backup
+.env.local
 .env.production
+.env.staging
 .env.test
 .phpactor.json
 .phpunit.result.cache
@@ -26,3 +28,4 @@ _ide_helper.php
 Homestead.json
 Homestead.yaml
 Thumbs.db
+/deploy/db_test.php
