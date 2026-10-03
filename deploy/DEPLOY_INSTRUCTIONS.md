@@ -24,6 +24,16 @@
         └── files/
 ```
 
+## CloudPanel (live: societynew.in) layout
+```
+/home/societynew1/htdocs/
+├── easylogics-laravel/        ← Laravel project (app, vendor, .env ...) – NOT web-accessible
+└── societynew.in/             ← site root (CakePHP)
+    └── new/                   ← index.php (= deploy/public_new_index.php), .htaccess, files/ ...
+```
+`index.php` finds `easylogics-laravel` automatically (sibling of the site root,
+or inside it); if it is missing it shows a clear error instead of a blank 500.
+
 ## Steps
 
 ### STEP 1: Upload Laravel project
