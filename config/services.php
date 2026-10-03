@@ -35,4 +35,13 @@ return [
         ],
     ],
 
+    'anthropic' => [
+        'key' => env('ANTHROPIC_API_KEY'),
+        'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-5'),
+    ],
+
+    'enquiry' => [
+        'to' => env('ENQUIRY_TO', 'easylogicst@gmail.com'),
+    ],
+
 ];

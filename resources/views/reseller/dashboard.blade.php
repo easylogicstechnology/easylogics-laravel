@@ -7,21 +7,32 @@
     <h2>Reseller Dashboard</h2>
 </div>
 
-@if($creditInfo['credit'] > 0)
-<div style="background:linear-gradient(135deg,#1a5276,#2980b9); border-radius:8px; padding:16px 20px; margin-bottom:20px; color:#fff; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-    <div>
-        <div style="font-size:12px; text-transform:uppercase; letter-spacing:1px; opacity:0.8;">Member Credit</div>
-        <div style="font-size:28px; font-weight:700; margin-top:2px;">{{ $creditInfo['used'] }} <span style="font-size:16px; opacity:0.7;">/ {{ $creditInfo['credit'] }}</span></div>
+@if(!empty($subscriptionExpiry))
+    @php
+        $__daysLeft = (int) ceil((strtotime($subscriptionExpiry) - strtotime(date('Y-m-d'))) / 86400);
+        $__isExpired = $__daysLeft < 0;
+        $__isSoon = !$__isExpired && $__daysLeft <= 15;
+        $__bannerClass = $__isExpired ? 'alert-error' : ($__isSoon ? 'alert-warning' : 'alert-success');
+        $__bannerBg = $__isExpired ? '#f8d7da' : ($__isSoon ? '#fff3cd' : '#d4edda');
+        $__bannerColor = $__isExpired ? '#721c24' : ($__isSoon ? '#856404' : '#155724');
+    @endphp
+    <div style="background:{{ $__bannerBg }}; color:{{ $__bannerColor }}; padding:10px 16px; border-radius:4px; margin-bottom:16px; font-size:14px;">
+        <strong>Subscription Expiry:</strong> {{ \Carbon\Carbon::parse($subscriptionExpiry)->format('d-M-Y') }}
+        @if($__isExpired)
+            &mdash; <strong>Expired {{ abs($__daysLeft) }} day(s) ago.</strong> Please renew to continue.
+        @elseif($__isSoon)
+            &mdash; Expiring in {{ $__daysLeft }} day(s). Please renew soon.
+        @else
+            &mdash; {{ $__daysLeft }} day(s) remaining.
+        @endif
     </div>
-    <div style="text-align:right;">
-        <div style="font-size:12px; text-transform:uppercase; letter-spacing:1px; opacity:0.8;">Remaining</div>
-        <div style="font-size:28px; font-weight:700; margin-top:2px; color:{{ $creditInfo['remaining'] > 0 ? '#2ecc71' : '#e74c3c' }};">{{ $creditInfo['remaining'] }}</div>
+@endif
+
+@if(!empty($awaitingConfirmationCount))
+    <div style="background:#d1ecf1; color:#0c5460; padding:10px 16px; border-radius:4px; margin-bottom:16px; font-size:14px;">
+        <strong>{{ $awaitingConfirmationCount }} complaint(s)</strong> marked resolved by Admin - please confirm the fix or reopen them.
+        <a href="{{ route('reseller.complaints') }}" style="color:#0c5460; font-weight:600; text-decoration:underline;">Review now &raquo;</a>
     </div>
-    <div style="width:100%; background:rgba(255,255,255,0.2); border-radius:4px; height:8px; overflow:hidden;">
-        @php $pct = $creditInfo['credit'] > 0 ? min(100, ($creditInfo['used'] / $creditInfo['credit']) * 100) : 0; @endphp
-        <div style="width:{{ $pct }}%; height:100%; background:{{ $pct >= 90 ? '#e74c3c' : ($pct >= 70 ? '#f39c12' : '#2ecc71') }}; border-radius:4px; transition:width 0.3s;"></div>
-    </div>
-</div>
 @endif
 
 <div class="grid-4" style="margin-bottom:20px;">
@@ -51,7 +62,9 @@
         <h3 style="margin:0;">Societies Overview</h3>
         <div style="display:flex; gap:8px; align-items:center;">
             <input type="text" id="society-search" class="form-control" placeholder="Search society..." oninput="filterSocieties()" style="max-width:250px; margin:0; padding:6px 10px; font-size:13px;">
+            @if(Auth::user()->hasPermission('software', 'add'))
             <a href="{{ route('reseller.societies.create') }}" class="btn btn-primary btn-sm">Create Society</a>
+            @endif
         </div>
     </div>
     <div style="overflow-x: auto;">

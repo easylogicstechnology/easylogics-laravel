@@ -18,7 +18,6 @@
                     <th>Society Name</th>
                     <th>Society Code</th>
                     <th>Role</th>
-                    <th>Member Credit</th>
                     <th>Created Date</th>
                     <th>Action</th>
                 </tr>
@@ -31,13 +30,6 @@
                     <td>{{ $user->societies->first()->society_name ?? '' }}</td>
                     <td>{{ $user->societies->first()->society_code ?? '' }}</td>
                     <td>{{ $user->role }}</td>
-                    <td>
-                        @if($user->role === 'Reseller')
-                            {{ $user->member_credit > 0 ? $user->member_credit : 'Unlimited' }}
-                        @else
-                            -
-                        @endif
-                    </td>
                     <td>{{ $user->cdate ? date('d/m/Y H:i:s', strtotime($user->cdate)) : '' }}</td>
                     <td>
                         <a href="{{ route('admin.societies.create', $user->id) }}" class="btn btn-primary btn-sm" title="Edit">Edit</a>
@@ -50,7 +42,7 @@
                 </tr>
                 @empty
                 <tr>
-                    <td colspan="8" style="text-align:center; color:#999;">No societies found</td>
+                    <td colspan="7" style="text-align:center; color:#999;">No societies found</td>
                 </tr>
                 @endforelse
             </tbody>

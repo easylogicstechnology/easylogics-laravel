@@ -24,8 +24,8 @@ class User extends Authenticatable
         'access_level',
         'added_by',
         'status',
-        'member_credit',
         'name',
+        'full_name',
         'email',
         'mobile',
     ];
@@ -69,31 +69,25 @@ class User extends Authenticatable
         return $this->role === 'Member';
     }
 
-    public function isResellerUser(): bool
+    public function isSubReseller(): bool
     {
-        return $this->role === 'ResellerUser';
+        return $this->role === 'SubReseller';
     }
 
-    public function hasPermission(string $module, string $action = 'can_view'): bool
+    /**
+     * A reseller's team login is limited to the {module}_{action} flags of its reseller_sub_users row,
+     * which is put in the session at login (Cake's Auth.sub_reseller - a snapshot, so a changed grid
+     * applies from the next login). Every other role is never restricted here.
+     */
+    public function hasPermission(string $module, string $action = 'view'): bool
     {
-        if ($this->role !== 'ResellerUser') {
+        if ($this->role !== 'SubReseller') {
             return true;
         }
 
-        if (!isset($this->cachedPermissions)) {
-            $this->cachedPermissions = UserPermission::where('user_id', $this->id)
-                ->get()
-                ->keyBy('module');
-        }
+        $subReseller = session('sub_reseller');
 
-        $perm = $this->cachedPermissions[$module] ?? null;
-
-        return $perm && $perm->$action == 1;
-    }
-
-    public function permissions()
-    {
-        return $this->hasMany(UserPermission::class, 'user_id');
+        return !empty($subReseller) && !empty($subReseller[$module . '_' . $action]);
     }
 
     public function createdUsers()
@@ -109,24 +103,6 @@ class User extends Authenticatable
     public function resellerSocieties()
     {
         return $this->hasMany(ResellerSociety::class, 'reseller_id');
-    }
-
-    public function getTotalMembersUsed(): int
-    {
-        $societyIds = ResellerSociety::where('reseller_id', $this->id)
-            ->pluck('societie_id')
-            ->toArray();
-
-        if (empty($societyIds)) {
-            return 0;
-        }
-
-        return Member::whereIn('society_id', $societyIds)->count();
-    }
-
-    public function getRemainingCredit(): int
-    {
-        return max(0, $this->member_credit - $this->getTotalMembersUsed());
     }
 
     public function validateCredentials($password): bool

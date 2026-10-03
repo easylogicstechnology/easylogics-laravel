@@ -36,8 +36,6 @@ class Society extends Model
         'conveynace_date',
         'authorised_person',
         'enable_sms',
-        'whatsapp_enabled',
-        'mobile_app_enabled',
         'op_balance_saved',
         'status',
     ];

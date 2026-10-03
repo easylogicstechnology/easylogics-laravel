@@ -5,27 +5,10 @@
 @section('content')
 <div class="page-header">
     <h2>My Assigned Societies</h2>
+    @if(Auth::user()->hasPermission('software', 'add'))
     <a href="{{ route('reseller.societies.create') }}" class="btn btn-primary">Create Society</a>
-</div>
-
-@if($creditInfo['credit'] > 0)
-<div class="card" style="background:#e8f4fd; border:1px solid #b8daff; margin-bottom:16px;">
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-        <div>
-            <strong style="color:#1a5276;">Member Credit:</strong>
-            <span style="font-size:18px; font-weight:700; color:#2c3e50; margin-left:8px;">{{ $creditInfo['used'] }} / {{ $creditInfo['credit'] }}</span>
-            <span style="color:#666; font-size:13px; margin-left:4px;">used</span>
-        </div>
-        <div>
-            <span style="font-size:13px; color:#666;">Remaining:</span>
-            <span style="font-size:18px; font-weight:700; color:{{ $creditInfo['remaining'] > 0 ? '#27ae60' : '#e74c3c' }}; margin-left:4px;">{{ $creditInfo['remaining'] }}</span>
-        </div>
-    </div>
-    @if($creditInfo['remaining'] <= 0)
-    <p style="margin-top:8px; color:#e74c3c; font-size:13px; font-weight:600;">Member limit reached. Contact Admin to increase credit.</p>
     @endif
 </div>
-@endif
 
 <div class="card">
     <h3>Select Society & Financial Year</h3>
@@ -85,15 +68,8 @@
                     <td>
                         @if($assigned->society)
                             @if($assigned->society->enable_sms === 'Y')
-                                <span style="background:#d4edda; color:#155724; padding:2px 6px; border-radius:8px; font-size:11px; margin-right:4px;">SMS</span>
-                            @endif
-                            @if($assigned->society->whatsapp_enabled)
-                                <span style="background:#d4edda; color:#155724; padding:2px 6px; border-radius:8px; font-size:11px; margin-right:4px;">WhatsApp</span>
-                            @endif
-                            @if($assigned->society->mobile_app_enabled)
-                                <span style="background:#d4edda; color:#155724; padding:2px 6px; border-radius:8px; font-size:11px;">App</span>
-                            @endif
-                            @if($assigned->society->enable_sms !== 'Y' && !$assigned->society->whatsapp_enabled && !$assigned->society->mobile_app_enabled)
+                                <span style="background:#d4edda; color:#155724; padding:2px 6px; border-radius:8px; font-size:11px;">SMS</span>
+                            @else
                                 <span style="color:#999; font-size:12px;">None</span>
                             @endif
                         @endif

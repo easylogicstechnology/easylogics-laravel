@@ -2,10 +2,12 @@
 
 namespace App\Services;
 
+use App\Models\Member;
 use App\Models\MemberBillSettlement;
 use App\Models\MemberBillSummary;
 use App\Models\MemberPayment;
 use App\Models\SocietyParameter;
+use App\Support\JournalNotes;
 use Illuminate\Support\Facades\DB;
 
 class BillSettlementService
@@ -65,8 +67,12 @@ class BillSettlementService
 
             // Build bills array
             $billsArr = [];
+            // Manual Debit/Credit Note rows are applied to their pinned bill (CakePHP attachManualNoteDeltas()).
+            $noteDeltas = ($billType == 'reg')
+                ? JournalNotes::manualDeltasByBillNo($memberId, $societyId, $memberTransfer, $financialYearId)
+                : [];
             foreach ($bills as $bill) {
-                $billsArr[] = $bill->toArray();
+                $billsArr[] = $bill->toArray() + JournalNotes::billKeys($noteDeltas, $billType, $bill->bill_no);
             }
             $totalBills = count($billsArr);
 
@@ -156,16 +162,16 @@ class BillSettlementService
                 + $billsArr[$idx]['interest_on_due_amount']
                 + $billsArr[$idx]['tax_total'];
             $billsArr[$idx]['amount_payable'] = $billsArr[$idx]['op_due_amount']
-                + $billsArr[$idx]['monthly_bill_amount'] + $jvDebitedAmt;
+                + $billsArr[$idx]['monthly_bill_amount'] + $jvDebitedAmt + $billsArr[$idx]['_dn_payable'];
 
             $billsArr[$idx]['principal_balance'] = ($billsArr[$idx]['op_principal_arrears']
                 + $billsArr[$idx]['monthly_principal_amount'])
-                - $billsArr[$idx]['principal_adjusted'] + $jvDebitedAmt;
+                - $billsArr[$idx]['principal_adjusted'] + $jvDebitedAmt + $billsArr[$idx]['_dn_principal'];
             $billsArr[$idx]['interest_balance'] = ($billsArr[$idx]['op_interest_arrears']
                 + $billsArr[$idx]['interest_on_due_amount'])
-                - $billsArr[$idx]['interest_adjusted'];
+                - $billsArr[$idx]['interest_adjusted'] + $billsArr[$idx]['_dn_interest'];
             $billsArr[$idx]['tax_balance'] = $billsArr[$idx]['tax_total']
-                + $billsArr[$idx]['op_tax_arrears'];
+                + $billsArr[$idx]['op_tax_arrears'] + $billsArr[$idx]['_dn_tax'];
         } else {
             // Subsequent bills: arrears come from previous bill's POST-ALLOCATION state
             $prev = $billsArr[$idx - 1];
@@ -189,14 +195,14 @@ class BillSettlementService
                 + $billsArr[$idx]['interest_on_due_amount']
                 + $billsArr[$idx]['tax_total'];
             $billsArr[$idx]['amount_payable'] = $billsArr[$idx]['op_due_amount']
-                + $billsArr[$idx]['monthly_bill_amount'];
+                + $billsArr[$idx]['monthly_bill_amount'] + $billsArr[$idx]['_dn_payable'];
 
             $billsArr[$idx]['principal_balance'] = $billsArr[$idx]['monthly_principal_amount']
-                + $prev['principal_balance'] + $jvDebitedAmt;
+                + $prev['principal_balance'] + $jvDebitedAmt + $billsArr[$idx]['_dn_principal'];
             $billsArr[$idx]['interest_balance'] = $billsArr[$idx]['interest_on_due_amount']
-                + $prev['interest_balance'];
+                + $prev['interest_balance'] + $billsArr[$idx]['_dn_interest'];
             $billsArr[$idx]['tax_balance'] = $billsArr[$idx]['tax_total']
-                + $prev['tax_balance'];
+                + $prev['tax_balance'] + $billsArr[$idx]['_dn_tax'];
         }
 
         $billsArr[$idx]['balance_amount'] = $billsArr[$idx]['principal_balance']
@@ -252,7 +258,7 @@ class BillSettlementService
                     // Propagate: recalculate subsequent bills' tax_balance
                     for ($t = $innerIdx + 1; $t < $totalBills; $t++) {
                         $billsArr[$t]['tax_balance'] = $billsArr[$t]['tax_total']
-                            + $billsArr[$t - 1]['tax_balance'];
+                            + $billsArr[$t - 1]['tax_balance'] + $billsArr[$t]['_dn_tax'];
                         $billsArr[$t]['balance_amount'] = $billsArr[$t]['principal_balance']
                             + $billsArr[$t]['interest_balance']
                             + $billsArr[$t]['tax_balance'];
@@ -269,7 +275,7 @@ class BillSettlementService
                     // Propagate: recalculate subsequent bills' interest_balance
                     for ($in = $innerIdx + 1; $in < $totalBills; $in++) {
                         $billsArr[$in]['interest_balance'] = $billsArr[$in]['interest_on_due_amount']
-                            + $billsArr[$in - 1]['interest_balance'];
+                            + $billsArr[$in - 1]['interest_balance'] + $billsArr[$in]['_dn_interest'];
                         $billsArr[$in]['balance_amount'] = $billsArr[$in]['principal_balance']
                             + $billsArr[$in]['interest_balance']
                             + $billsArr[$in]['tax_balance'];
@@ -287,7 +293,7 @@ class BillSettlementService
                     for ($p = $innerIdx + 1; $p < $totalBills; $p++) {
                         $billsArr[$p]['principal_balance'] = $billsArr[$p]['monthly_principal_amount']
                             + $billsArr[$p]['jv_adjustment']
-                            + $billsArr[$p - 1]['principal_balance'];
+                            + $billsArr[$p - 1]['principal_balance'] + $billsArr[$p]['_dn_principal'];
                         $billsArr[$p]['balance_amount'] = $billsArr[$p]['principal_balance']
                             + $billsArr[$p]['interest_balance']
                             + $billsArr[$p]['tax_balance'];
@@ -327,6 +333,25 @@ class BillSettlementService
             if (!$hasPayment) {
                 break;
             }
+        }
+
+        // Matches CakePHP's updateMemberBillSummaryById(): after addPaymentInUpdation()
+        // returns, it subtracts whatever payment pool is still left over (couldn't be
+        // absorbed by any bill's own tax/interest/principal balance, which the loop above
+        // floors at 0 - same as Cake's own deductPaidAmount()) directly from THIS bill's
+        // balance_amount, not from the three component balances. That is what lets
+        // balance_amount go negative to represent an advance/credit, which setupBill()'s
+        // ($prevBalance < 0) check then carries into the next bill's arrears - without this
+        // step an overpayment beyond all currently-existing bills' dues was simply discarded.
+        $leftover = 0;
+        foreach ($payments as $payment) {
+            if (strtotime($payment->payment_date) > strtotime($boundary)) {
+                continue;
+            }
+            $leftover += $payment->amount_paid - ($paymentUsed[$payment->id] ?? 0);
+        }
+        if ($leftover > 0) {
+            $billsArr[$outerIdx]['balance_amount'] -= $leftover;
         }
     }
 
@@ -390,14 +415,16 @@ class BillSettlementService
      */
     private function getDebitedJvAmount($fromDate, $toDate, $memberId, $societyId, $memberTransfer, $financialYearId): float
     {
-        $result = DB::table('journal_vouchers')
+        $query = DB::table('journal_vouchers')
             ->where('jv_debit_member_head_id', $memberId)
             ->where('society_id', $societyId)
             ->where('member_transfer', $memberTransfer)
             ->where('financial_year_id', $financialYearId)
             ->where('voucher_date', '>=', $fromDate)
-            ->where('voucher_date', '<=', $toDate)
-            ->sum('jv_amount_debited');
+            ->where('voucher_date', '<=', $toDate);
+
+        // MANUAL Debit/Credit Note rows are applied to their pinned bill instead (CakePHP jvNoManualSql()).
+        $result = JournalNotes::excludeManual($query)->sum('jv_amount_debited');
 
         return floatval($result);
     }
@@ -422,10 +449,102 @@ class BillSettlementService
         }
     }
 
+    // Matches CakePHP's getLatestTranferredId() exactly: reads members.member_transfer
+    // directly, NOT a MAX() over that member's bills. Those two disagree in a common,
+    // real case - a member who has just been transferred (member_transfer bumped) but has
+    // no bill yet for that new generation - where MAX(bills.member_transfer) still returns
+    // the OLD generation's number (or NULL/0 if they have no bills at all). Every caller of
+    // this method (payment save/delete, cheque return, old Update, Current Bill Update,
+    // tariff edits) would then silently operate against the transferred-out owner's old
+    // bills instead of the new owner's, until the next bill happened to be generated.
     public function getLatestTransferNo($memberId, $societyId)
     {
-        return MemberBillSummary::where('member_id', $memberId)
+        return Member::where('id', $memberId)
             ->where('society_id', $societyId)
-            ->max('member_transfer') ?? 0;
+            ->value('member_transfer') ?? 0;
+    }
+
+    /**
+     * "Current Bill Update" (CakePHP updateCurrentMemberBillSummaryById): recalculates
+     * $currentBillId only and never writes a change to any other bill in the chain.
+     *
+     * recalculateMemberBills() above is the only recalculation engine that exists (it
+     * mirrors Cake's own sequential algorithm, where each bill's numbers depend on the
+     * previous bill's already-processed state) - rather than hand-porting Cake's
+     * separate ~150-line single-bill calculation path as new, unreviewed financial
+     * logic, this reuses that same trusted engine: it runs the full chain, then
+     * restores every bill (and every settlement row) except the current one back to
+     * its exact pre-run state, so only the current bill's outcome is ever persisted.
+     *
+     * Caveat: if an earlier bill's saved values were already out of sync with what a
+     * fresh recalc would produce (data drift), the current bill's freshly computed
+     * numbers are derived from the fresh (in-run) previous-bill values, not the stale
+     * saved ones - CakePHP's own single-bill code instead trusts the saved previous
+     * bill's balances as-is. This only differs from Cake when such drift already
+     * exists; the normal case (earlier bills already consistent) produces identical
+     * results either way.
+     */
+    public function recalculateCurrentBillOnly($memberId, $societyId, $billType, $financialYearId, $memberTransfer, $currentBillId)
+    {
+        return DB::transaction(function () use ($memberId, $societyId, $billType, $financialYearId, $memberTransfer, $currentBillId) {
+            $billIds = MemberBillSummary::where('member_id', $memberId)
+                ->where('society_id', $societyId)
+                ->where('bill_type', $billType)
+                ->where('financial_year_id', $financialYearId)
+                ->where('member_transfer', $memberTransfer)
+                ->pluck('id');
+
+            if (!$billIds->contains($currentBillId)) {
+                return false;
+            }
+
+            $billSnapshot = MemberBillSummary::whereIn('id', $billIds)->get()->keyBy('id')
+                ->map(fn ($b) => $b->getAttributes());
+
+            $paymentIds = MemberPayment::where('member_id', $memberId)
+                ->where('society_id', $societyId)
+                ->where('bill_type', $billType)
+                ->where('financial_year_id', $financialYearId)
+                ->where('member_transfer', $memberTransfer)
+                ->pluck('id');
+
+            $settlementSnapshot = $paymentIds->isEmpty() ? collect()
+                : MemberBillSettlement::whereIn('payment_id', $paymentIds)->get()
+                    ->map(fn ($s) => $s->getAttributes());
+
+            $ok = $this->recalculateMemberBills($memberId, $societyId, $billType, $financialYearId, $memberTransfer);
+            if (!$ok) {
+                return false;
+            }
+
+            $freshCurrentBillSettlements = $paymentIds->isEmpty() ? collect()
+                : MemberBillSettlement::whereIn('payment_id', $paymentIds)
+                    ->where('bill_summary_id', $currentBillId)->get()
+                    ->map(fn ($s) => $s->getAttributes());
+
+            foreach ($billSnapshot as $id => $attrs) {
+                if ((int) $id === (int) $currentBillId) {
+                    continue;
+                }
+                unset($attrs['id']);
+                DB::table('member_bill_summaries')->where('id', $id)->update($attrs);
+            }
+
+            if (!$paymentIds->isEmpty()) {
+                MemberBillSettlement::whereIn('payment_id', $paymentIds)->delete();
+                foreach ($settlementSnapshot as $row) {
+                    unset($row['id']);
+                    DB::table('member_bill_settlements')->insert($row);
+                }
+                MemberBillSettlement::whereIn('payment_id', $paymentIds)
+                    ->where('bill_summary_id', $currentBillId)->delete();
+                foreach ($freshCurrentBillSettlements as $row) {
+                    unset($row['id']);
+                    DB::table('member_bill_settlements')->insert($row);
+                }
+            }
+
+            return true;
+        });
     }
 }

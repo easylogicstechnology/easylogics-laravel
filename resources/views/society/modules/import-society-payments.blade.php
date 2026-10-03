@@ -4,7 +4,7 @@
 <div class="page-header">
     <h2>Import Society Payments</h2>
     <div>
-        <a href="{{ asset('files/SampleImportSocietyPayment.xlsx') }}" class="btn btn-success btn-sm" style="margin-right:6px;">Download Sample Template file</a>
+        <a href="{{ route('society.downloadSampleSocietyPaymentTemplate') }}" class="btn btn-success btn-sm" style="margin-right:6px;">Download Sample Template file</a>
     </div>
 </div>
 

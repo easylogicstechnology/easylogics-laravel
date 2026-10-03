@@ -5,30 +5,44 @@
 @section('content')
 <h2 style="font-size: 20px; margin-bottom: 20px; color: #2c3e50;">Admin Dashboard</h2>
 
-<div class="grid-4">
-    <div class="card">
-        <h3>Total Societies</h3>
-        <div class="value">{{ number_format($countSocieties) }}</div>
+<div class="stat-cards-row">
+    <div class="stat-card stat-card-red">
+        <div class="stat-card-top">
+            <div>
+                <div class="stat-card-value">{{ number_format($countReseller) }}</div>
+                <div class="stat-card-label">No. Of Resellers</div>
+            </div>
+            <i class="fa fa-users stat-card-icon"></i>
+        </div>
+        <div class="stat-card-sub">Societies assign to Reseller -&gt; <strong>{{ number_format($resellerSocietiesCount) }}</strong></div>
     </div>
-    <div class="card">
-        <h3>Active Members</h3>
-        <div class="value">{{ number_format($allSocietysMemberCount) }}</div>
+    <div class="stat-card stat-card-yellow">
+        <div class="stat-card-top">
+            <div>
+                <div class="stat-card-value">{{ number_format($countSocieties) }}</div>
+                <div class="stat-card-label">No. of Societies</div>
+            </div>
+            <i class="fa fa-building stat-card-icon"></i>
+        </div>
+        <div class="stat-card-sub">Members -&gt; <strong>{{ number_format($allSocietysMemberCount) }}</strong></div>
     </div>
-    <div class="card">
-        <h3>Total Resellers</h3>
-        <div class="value">{{ number_format($countReseller) }}</div>
+    <div class="stat-card stat-card-green">
+        <div class="stat-card-top">
+            <div>
+                <div class="stat-card-value">{{ number_format($currentYearSocietiesLists) }}</div>
+                <div class="stat-card-label">New Societies This Year</div>
+            </div>
+            <i class="fa fa-institution stat-card-icon"></i>
+        </div>
     </div>
-    <div class="card">
-        <h3>Reseller-Societies</h3>
-        <div class="value">{{ number_format($resellerSocietiesCount) }}</div>
-    </div>
-    <div class="card">
-        <h3>Current Year Societies</h3>
-        <div class="value">{{ number_format($currentYearSocietiesLists) }}</div>
-    </div>
-    <div class="card">
-        <h3>Dropped Societies</h3>
-        <div class="value">{{ number_format($droppedSocietiesLists) }}</div>
+    <div class="stat-card stat-card-blue">
+        <div class="stat-card-top">
+            <div>
+                <div class="stat-card-value">{{ number_format($droppedSocietiesLists) }}</div>
+                <div class="stat-card-label">Societies Dropped</div>
+            </div>
+            <i class="fa fa-times-circle stat-card-icon"></i>
+        </div>
     </div>
 </div>
 

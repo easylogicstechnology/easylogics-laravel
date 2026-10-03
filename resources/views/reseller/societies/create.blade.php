@@ -8,22 +8,6 @@
     <a href="{{ route('reseller.societies.assigned') }}" class="btn btn-primary">My Societies</a>
 </div>
 
-@if($creditInfo['credit'] > 0)
-<div class="card" style="background:#e8f4fd; border:1px solid #b8daff; margin-bottom:16px;">
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-        <div>
-            <strong style="color:#1a5276;">Member Credit:</strong>
-            <span style="font-size:18px; font-weight:700; color:#2c3e50; margin-left:8px;">{{ $creditInfo['used'] }} / {{ $creditInfo['credit'] }}</span>
-            <span style="color:#666; font-size:13px; margin-left:4px;">used</span>
-        </div>
-        <div>
-            <span style="font-size:13px; color:#666;">Remaining:</span>
-            <span style="font-size:18px; font-weight:700; color:{{ $creditInfo['remaining'] > 0 ? '#27ae60' : '#e74c3c' }}; margin-left:4px;">{{ $creditInfo['remaining'] }}</span>
-        </div>
-    </div>
-</div>
-@endif
-
 <div class="card">
     <form method="POST" action="{{ route('reseller.societies.create') }}" autocomplete="off">
         @csrf

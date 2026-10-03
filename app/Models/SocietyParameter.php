@@ -34,6 +34,7 @@ class SocietyParameter extends Model
         'settlement',
         'gst_limit',
         'op_balance_saved',
+        'current_bill_update_enabled',
     ];
 
     public function society()

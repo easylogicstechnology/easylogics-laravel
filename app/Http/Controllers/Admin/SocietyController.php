@@ -100,8 +100,6 @@ class SocietyController extends Controller
                 $message = 'Society login has been created successfully';
             }
         } else {
-            $user->member_credit = (int) ($request->input('member_credit') ?? 0);
-            $user->save();
             $message = 'Reseller login has been created successfully';
         }
 
@@ -217,94 +215,4 @@ class SocietyController extends Controller
         ]);
     }
 
-    public function resellers()
-    {
-        $resellers = User::where('added_by', Auth::id())
-            ->where('access_level', 3)
-            ->where('status', 1)
-            ->orderBy('username')
-            ->get();
-
-        $resellerData = [];
-        foreach ($resellers as $reseller) {
-            $societyIds = ResellerSociety::where('reseller_id', $reseller->id)
-                ->pluck('societie_id')
-                ->toArray();
-
-            $totalMembers = empty($societyIds) ? 0 : Member::whereIn('society_id', $societyIds)->count();
-            $totalSocieties = count($societyIds);
-
-            $resellerData[] = [
-                'user' => $reseller,
-                'total_societies' => $totalSocieties,
-                'total_members' => $totalMembers,
-                'credit' => $reseller->member_credit,
-                'remaining' => max(0, $reseller->member_credit - $totalMembers),
-            ];
-        }
-
-        return view('admin.resellers.index', compact('resellerData'));
-    }
-
-    public function updateResellerCredit(Request $request)
-    {
-        $request->validate([
-            'reseller_id' => 'required|integer',
-            'member_credit' => 'required|integer|min:0',
-        ]);
-
-        $reseller = User::where('id', $request->input('reseller_id'))
-            ->where('access_level', 3)
-            ->firstOrFail();
-
-        $reseller->member_credit = (int) $request->input('member_credit');
-        $reseller->save();
-
-        return response()->json([
-            'error' => 0,
-            'error_message' => 'Credit updated to ' . $reseller->member_credit . ' for ' . $reseller->username,
-        ]);
-    }
-
-    public function societyFeatures()
-    {
-        $societies = Society::where('status', 1)
-            ->where('society_name', '!=', '')
-            ->orderBy('society_name')
-            ->select('id', 'society_name', 'society_code', 'enable_sms', 'whatsapp_enabled', 'mobile_app_enabled')
-            ->get();
-
-        return view('admin.societies.features', compact('societies'));
-    }
-
-    public function updateSocietyFeatures(Request $request)
-    {
-        $request->validate([
-            'society_id' => 'required|integer',
-            'feature' => 'required|in:enable_sms,whatsapp_enabled,mobile_app_enabled',
-            'value' => 'required',
-        ]);
-
-        $society = Society::findOrFail($request->input('society_id'));
-        $feature = $request->input('feature');
-        $value = $request->input('value');
-
-        if ($feature === 'enable_sms') {
-            $society->enable_sms = $value === '1' ? 'Y' : 'N';
-        } else {
-            $society->{$feature} = (int) $value;
-        }
-        $society->save();
-
-        $featureNames = [
-            'enable_sms' => 'SMS',
-            'whatsapp_enabled' => 'WhatsApp',
-            'mobile_app_enabled' => 'Mobile App',
-        ];
-
-        return response()->json([
-            'error' => 0,
-            'error_message' => $featureNames[$feature] . ' ' . ($value === '1' ? 'enabled' : 'disabled') . ' for ' . $society->society_name,
-        ]);
-    }
 }

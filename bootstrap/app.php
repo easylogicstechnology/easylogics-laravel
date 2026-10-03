@@ -15,6 +15,22 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->web(append: [
             \App\Http\Middleware\SwitchDatabaseConnection::class,
         ]);
+
+        // CakePHP compares the typed credentials exactly (no trimming); Laravel already leaves 'password'
+        // alone, 'username' is added so a leading/trailing space is not silently dropped either.
+        $middleware->trimStrings(except: ['username']);
+
+        // CakePHP AuthComponent::_unauthenticated(): flash authError and land on the home page (the login
+        // modal opens with it); an AJAX request just gets 403.
+        $middleware->redirectGuestsTo(function (Request $request) {
+            if ($request->ajax()) {
+                abort(403);
+            }
+
+            $request->session()->flash('error', 'You must be logged in to view this page.');
+
+            return route('login');
+        });
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

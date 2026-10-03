@@ -4,23 +4,40 @@ namespace App\Http\Controllers\Reseller;
 
 use App\Http\Controllers\Controller;
 use App\Models\Member;
+use App\Models\Reseller;
+use App\Models\ResellerPayment;
 use App\Models\ResellerSociety;
 use App\Models\Society;
-use Illuminate\Support\Facades\Auth;
+use App\Models\SocietyComplaint;
+use App\Support\ResellerContext;
 use Illuminate\Support\Facades\DB;
 
 class DashboardController extends Controller
 {
     public function index()
     {
-        $resellerId = Auth::id();
-        $reseller = Auth::user();
+        $resellerId = ResellerContext::id();
         $currentYear = date('Y');
         $yearStart = $currentYear . '-01-01';
+
+        $sellerInfo = Reseller::where('user_id', $resellerId)->first();
+        $subscriptionExpiry = $sellerInfo->subscription_expiry ?? null;
+
+        $awaitingConfirmationCount = SocietyComplaint::where('reseller_id', $resellerId)
+            ->where('status', 1)
+            ->count();
 
         $assignedSocieties = ResellerSociety::where('reseller_id', $resellerId)
             ->with('society:id,society_name,society_code,status,cdate')
             ->get();
+
+        // A team login only gets the societies its reseller ticked for it - deny by default.
+        $allowedSocietyIds = ResellerContext::allowedSocietyIds();
+        if ($allowedSocietyIds !== null) {
+            $assignedSocieties = $assignedSocieties->filter(
+                fn ($row) => in_array((int) $row->societie_id, $allowedSocietyIds, true)
+            )->values();
+        }
 
         $societyIds = $assignedSocieties->pluck('societie_id')->all();
 
@@ -54,12 +71,6 @@ class DashboardController extends Controller
             $societyMemberCounts = $counts;
         }
 
-        $creditInfo = [
-            'credit' => $reseller->member_credit,
-            'used' => $totalMembers,
-            'remaining' => $reseller->member_credit > 0 ? max(0, $reseller->member_credit - $totalMembers) : 0,
-        ];
-
         return view('reseller.dashboard', compact(
             'assignedSocieties',
             'totalSocieties',
@@ -68,7 +79,23 @@ class DashboardController extends Controller
             'newThisYear',
             'droppedThisYear',
             'societyMemberCounts',
-            'creditInfo'
+            'subscriptionExpiry',
+            'awaitingConfirmationCount'
         ));
+    }
+
+    public function paymentDashboard()
+    {
+        $resellerId = ResellerContext::id();
+
+        $sellerInfo = Reseller::where('user_id', $resellerId)->first();
+        $purchaseDate = $sellerInfo->cdate ?? null;
+        $subscriptionExpiry = $sellerInfo->subscription_expiry ?? null;
+
+        $payments = ResellerPayment::where('reseller_id', $resellerId)
+            ->orderByDesc('payment_date')
+            ->get();
+
+        return view('reseller.paymentDashboard', compact('purchaseDate', 'subscriptionExpiry', 'payments'));
     }
 }

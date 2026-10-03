@@ -27,4 +27,9 @@ class SocietyBank extends Model
     {
         return $this->belongsTo(SocietyLedgerHead::class, 'bank_ledger_head_id');
     }
+
+    public function bankLedgerHead()
+    {
+        return $this->belongsTo(SocietyLedgerHead::class, 'bank_ledger_head_id');
+    }
 }

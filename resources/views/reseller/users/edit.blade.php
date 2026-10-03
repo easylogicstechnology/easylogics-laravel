@@ -4,317 +4,108 @@
 
 @section('content')
 <style>
-    .create-user-header {
-        background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
-        border-radius: 12px;
-        padding: 24px 28px;
-        color: #fff;
-        margin-bottom: 24px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        position: relative;
-        overflow: hidden;
-    }
-    .create-user-header::after {
-        content: '';
-        position: absolute;
-        right: -20px;
-        top: -20px;
-        width: 160px;
-        height: 160px;
-        background: rgba(255,255,255,0.08);
-        border-radius: 50%;
-    }
-    .create-user-header h2 {
-        font-size: 22px;
-        font-weight: 700;
-        margin-bottom: 4px;
-    }
-    .create-user-header p {
-        font-size: 13px;
-        opacity: 0.85;
-        margin: 0;
-    }
-
-    .form-card {
-        max-width: 560px;
-        background: #fff;
-        border-radius: 10px;
-        box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-        overflow: hidden;
-    }
-    .form-card-header {
-        padding: 16px 20px;
-        border-bottom: 1px solid #f0f0f0;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-    .form-card-header .icon-circle {
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 16px;
-    }
-    .form-card-header h3 {
-        font-size: 16px;
-        font-weight: 600;
-        color: #2c3e50;
-        margin: 0;
-        text-transform: none;
-        letter-spacing: 0;
-    }
-    .form-card-body {
-        padding: 20px;
-    }
-
-    .form-field {
-        margin-bottom: 18px;
-    }
-    .form-field:last-child {
-        margin-bottom: 0;
-    }
-    .form-field label {
-        display: block;
-        font-size: 13px;
-        font-weight: 600;
-        color: #444;
-        margin-bottom: 6px;
-    }
-    .form-field label .req {
-        color: #e74c3c;
-    }
-    .form-field .input-wrap {
-        position: relative;
-    }
-    .form-field .input-wrap input {
-        width: 100%;
-        padding: 10px 14px 10px 40px;
-        border: 1.5px solid #e0e0e0;
-        border-radius: 8px;
-        font-size: 14px;
-        transition: border-color 0.2s, box-shadow 0.2s;
-        background: #fafbfc;
-    }
-    .form-field .input-wrap input:focus {
-        outline: none;
-        border-color: #3498db;
-        box-shadow: 0 0 0 3px rgba(52,152,219,0.12);
-        background: #fff;
-    }
-    .form-field .input-wrap .field-icon {
-        position: absolute;
-        left: 12px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: #999;
-        font-size: 16px;
-        pointer-events: none;
-    }
-
-    .status-toggle {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-top: 8px;
-    }
-    .toggle-switch {
-        position: relative;
-        width: 52px;
-        height: 28px;
-    }
-    .toggle-switch input {
-        opacity: 0;
-        width: 0;
-        height: 0;
-    }
-    .toggle-slider {
-        position: absolute;
-        cursor: pointer;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: #ccc;
-        border-radius: 28px;
-        transition: 0.3s;
-    }
-    .toggle-slider::before {
-        content: '';
-        position: absolute;
-        height: 22px;
-        width: 22px;
-        left: 3px;
-        bottom: 3px;
-        background: #fff;
-        border-radius: 50%;
-        transition: 0.3s;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-    }
-    .toggle-switch input:checked + .toggle-slider {
-        background: #27ae60;
-    }
-    .toggle-switch input:checked + .toggle-slider::before {
-        transform: translateX(24px);
-    }
-    .toggle-label {
-        font-size: 13px;
-        font-weight: 600;
-        color: #27ae60;
-    }
-    .toggle-label.inactive {
-        color: #e74c3c;
-    }
-
-    .form-actions {
-        display: flex;
-        gap: 12px;
-        padding: 20px;
-        border-top: 1px solid #f0f0f0;
-        justify-content: flex-end;
-    }
-    .btn-cancel {
-        background: #f5f5f5;
-        color: #666;
-        border: 1px solid #ddd;
-        padding: 10px 24px;
-        border-radius: 8px;
-        font-size: 14px;
-        font-weight: 500;
-        cursor: pointer;
-        text-decoration: none;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        transition: background 0.15s;
-    }
-    .btn-cancel:hover { background: #eee; }
-    .btn-update {
-        background: linear-gradient(135deg, #27ae60, #219a52);
-        color: #fff;
-        border: none;
-        padding: 10px 28px;
-        border-radius: 8px;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        transition: opacity 0.15s;
-        box-shadow: 0 2px 8px rgba(39,174,96,0.3);
-    }
-    .btn-update:hover { opacity: 0.9; }
-
-    .error-text {
-        color: #e74c3c;
-        font-size: 12px;
-        margin-top: 4px;
-    }
+    .perm-table th { text-align: center; font-weight: bold; font-size: 13px; }
+    .perm-table td { text-align: center; vertical-align: middle; }
+    .perm-table td:first-child, .perm-table th:first-child { text-align: left; }
+    .perm-table .module-name { font-weight: 600; font-size: 14px; }
+    .perm-table input[type="checkbox"] { width: 20px; height: 20px; cursor: pointer; }
+    .th-add { color: #27ae60; }
+    .th-edit { color: #2980b9; }
+    .th-delete { color: #e74c3c; }
+    .th-generate { color: #8e44ad; }
+    .th-update { color: #16a085; }
+    .th-view { color: #e67e22; }
+    .status-toggle { position: relative; display: inline-block; width: 50px; height: 26px; }
+    .status-toggle input { opacity: 0; width: 0; height: 0; }
+    .status-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; border-radius: 26px; }
+    .status-slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
+    .status-toggle input:checked + .status-slider { background-color: #27ae60; }
+    .status-toggle input:checked + .status-slider:before { transform: translateX(24px); }
+    .text-success { color: #27ae60; }
+    .text-danger { color: #e74c3c; }
+    .btn-default { background:#e7e7e7; color:#333; }
+    .user-cols { display:flex; flex-wrap:wrap; gap:30px; }
+    .user-cols > div { flex:1 1 420px; min-width:0; }
+    .user-cols .form-control { width:100%; padding:8px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px; }
 </style>
 
-<div class="page-header">
-    <h2>Edit User</h2>
-</div>
-
-@if(session('error'))
-    <div class="alert alert-error">{{ session('error') }}</div>
-@endif
-
-<div class="create-user-header">
-    <div>
-        <h2>Edit User: {{ $user->name }}</h2>
-        <p>Update user information</p>
+<div class="card">
+    <div class="page-header">
+        <h2><i class="fa fa-user"></i> Edit User - {{ optional($userData)->full_name ?: optional($userData)->username }}</h2>
+        <a href="{{ route('reseller.users.index') }}" class="btn btn-default btn-sm"><i class="fa fa-arrow-left"></i> Back to Users</a>
     </div>
-</div>
 
-<form method="POST" action="{{ route('reseller.users.update', $user->id) }}">
-    @csrf
-    @method('PUT')
-    <div class="form-card">
-            <div class="form-card-header">
-                <div class="icon-circle" style="background:linear-gradient(135deg,#3498db,#2980b9);">
-                    <span style="color:#fff;">&#128100;</span>
+    <form method="POST" action="{{ route('reseller.users.update', $subUser->id) }}" autocomplete="off">
+        @csrf
+        @method('PUT')
+        <div class="user-cols">
+            <div>
+                <h5 style="font-weight:bold;margin-bottom:20px;"><i class="fa fa-user"></i> User Information</h5>
+                <div class="form-group">
+                    <label class="control-label">Full Name</label>
+                    <input type="text" class="form-control" name="full_name" value="{{ optional($userData)->full_name }}" placeholder="Enter full name">
                 </div>
-                <h3>User Information</h3>
-            </div>
-            <div class="form-card-body">
-                <div class="form-field">
-                    <label>Full Name <span class="req">*</span></label>
-                    <div class="input-wrap">
-                        <span class="field-icon">&#128100;</span>
-                        <input type="text" name="name" value="{{ old('name', $user->name) }}" placeholder="Enter full name" required>
-                    </div>
-                    @error('name') <div class="error-text">{{ $message }}</div> @enderror
+                <div class="form-group">
+                    <label class="control-label">Email Address</label>
+                    <input type="email" class="form-control" name="email" value="{{ optional($userData)->email }}" placeholder="Enter email address">
                 </div>
-
-                <div class="form-field">
-                    <label>Email Address <span class="req">*</span></label>
-                    <div class="input-wrap">
-                        <span class="field-icon">&#9993;</span>
-                        <input type="email" name="email" value="{{ old('email', $user->email) }}" placeholder="Enter email address" required>
-                    </div>
-                    @error('email') <div class="error-text">{{ $message }}</div> @enderror
+                <div class="form-group">
+                    <label class="control-label">Mobile Number</label>
+                    <input type="text" class="form-control" name="mobile" value="{{ optional($userData)->mobile }}" placeholder="Enter mobile number" maxlength="10">
                 </div>
-
-                <div class="form-field">
-                    <label>Mobile Number <span class="req">*</span></label>
-                    <div class="input-wrap">
-                        <span class="field-icon">&#128222;</span>
-                        <input type="text" name="mobile" value="{{ old('mobile', $user->mobile) }}" placeholder="Enter mobile number" required>
-                    </div>
-                    @error('mobile') <div class="error-text">{{ $message }}</div> @enderror
+                <div class="form-group">
+                    <label class="control-label">Username</label>
+                    <input type="text" class="form-control" value="{{ optional($userData)->username }}" disabled>
                 </div>
-
-                <div class="form-field">
-                    <label>New Password <span style="color:#999; font-weight:400;">(leave blank to keep current)</span></label>
-                    <div class="input-wrap">
-                        <span class="field-icon">&#128274;</span>
-                        <input type="password" name="password" placeholder="Enter new password">
-                    </div>
-                    @error('password') <div class="error-text">{{ $message }}</div> @enderror
+                <div class="form-group">
+                    <label class="control-label">New Password <small class="text-muted">(leave blank to keep current)</small></label>
+                    <input type="password" class="form-control" name="password" placeholder="Enter new password" autocomplete="new-password">
                 </div>
-
-                <div class="form-field">
-                    <label>Confirm New Password</label>
-                    <div class="input-wrap">
-                        <span class="field-icon">&#128274;</span>
-                        <input type="password" name="password_confirmation" placeholder="Confirm new password">
-                    </div>
-                </div>
-
-                <div class="form-field">
-                    <label>Status</label>
-                    <div class="status-toggle">
-                        <label class="toggle-switch">
-                            <input type="hidden" name="status" value="0">
-                            <input type="checkbox" name="status" value="1" {{ $user->status == 1 ? 'checked' : '' }} id="statusToggle">
-                            <span class="toggle-slider"></span>
+                <div class="form-group">
+                    <label class="control-label">Status</label>
+                    <div>
+                        <label class="status-toggle" style="display:inline-block;">
+                            <input type="checkbox" name="status" value="1" {{ optional($userData)->status == 1 ? 'checked' : '' }}>
+                            <span class="status-slider"></span>
                         </label>
-                        <span class="toggle-label {{ $user->status != 1 ? 'inactive' : '' }}" id="statusLabel">{{ $user->status == 1 ? 'Active' : 'Inactive' }}</span>
+                        <span style="margin-left:10px;font-weight:bold;" class="{{ optional($userData)->status == 1 ? 'text-success' : 'text-danger' }}">{{ optional($userData)->status == 1 ? 'Active' : 'Inactive' }}</span>
                     </div>
                 </div>
             </div>
-
-            <div class="form-actions">
-                <a href="{{ route('reseller.users.index') }}" class="btn-cancel">&#10005; Cancel</a>
-                <button type="submit" class="btn-update">&#10003; Update User</button>
+            <div>
+                <h5 style="font-weight:bold;margin-bottom:20px;"><i class="fa fa-shield"></i> Set Permissions</h5>
+                <p class="text-muted" style="margin-bottom:15px;">Check the permissions you want to assign to this user.</p>
+                <div class="table-responsive">
+                    <table class="table table-bordered perm-table">
+                        <thead>
+                            <tr style="background:#f5f5f5;">
+                                <th>MODULE</th>
+                                <th class="th-add">ADD</th>
+                                <th class="th-edit">EDIT</th>
+                                <th class="th-delete">DELETE</th>
+                                <th class="th-generate">GENERATE</th>
+                                <th class="th-update">UPDATE</th>
+                                <th class="th-view">VIEW</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        @foreach($modules as $mod)
+                            <tr>
+                                <td class="module-name">{{ ucwords(str_replace('_', ' ', $mod)) }}</td>
+                                @foreach($permActions as $act)
+                                @php $key = $mod . '_' . $act; @endphp
+                                <td><input type="checkbox" name="Permission[{{ $key }}]" value="1" {{ !empty($subUser->$key) ? 'checked' : '' }}></td>
+                                @endforeach
+                            </tr>
+                        @endforeach
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
-    </div>
-</form>
-
-<script>
-document.getElementById('statusToggle').addEventListener('change', function() {
-    var label = document.getElementById('statusLabel');
-    if (this.checked) {
-        label.textContent = 'Active';
-        label.className = 'toggle-label';
-    } else {
-        label.textContent = 'Inactive';
-        label.className = 'toggle-label inactive';
-    }
-});
-</script>
+        <hr style="margin:20px 0;border:0;border-top:1px solid #eee;">
+        <a href="{{ route('reseller.users.index') }}" class="btn btn-default"><i class="fa fa-times"></i> Cancel</a>
+        <button type="submit" class="btn btn-success"><i class="fa fa-check"></i> Update User</button>
+    </form>
+</div>
 @endsection

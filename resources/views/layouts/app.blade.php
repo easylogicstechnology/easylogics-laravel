@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>@yield('title', 'EasyLogics Technology')</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
         .navbar { background: #2c3e50; color: #fff; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; position: fixed; top: 0; left: 0; right: 0; z-index: 100; }
-        .navbar h1 { font-size: 18px; font-weight: 600; }
+        .navbar h1 { font-size: 18px; font-weight: 600; display: flex; align-items: center; }
         .navbar .user-info { display: flex; align-items: center; gap: 16px; font-size: 14px; }
         .navbar .role-badge { background: rgba(255,255,255,0.15); padding: 4px 10px; border-radius: 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
         .navbar form button { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.3); color: #fff; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 13px; }
@@ -17,22 +18,26 @@
 
         .society-topbar { background: #34495e; position: fixed; top: 52px; left: 240px; right: 0; z-index: 99; display: flex; align-items: center; padding: 6px 16px; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid #2c3e50; }
         .society-topbar .menu-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
-        .society-topbar .menu-buttons a { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; background: #e74c3c; color: #fff; border-radius: 3px; text-decoration: none; font-size: 12px; font-weight: 500; white-space: nowrap; }
+        .society-topbar .menu-buttons a { display: inline-flex; align-items: center; gap: 5px; padding: 7px 13px; background: #b10058; color: #fff; border-radius: 3px; text-decoration: none; font-size: 14px; font-weight: 500; white-space: nowrap; }
         .society-topbar .menu-buttons a:hover { opacity: 0.85; }
 
-        .has-society-topbar .app-wrapper { margin-top: 92px; }
-        .has-society-topbar .sidebar { top: 92px; }
+        .has-society-topbar .app-wrapper { margin-top: var(--topbar-h, 92px); }
+        .has-society-topbar .sidebar { top: var(--topbar-h, 92px); }
 
         .app-wrapper { display: flex; margin-top: 52px; min-height: calc(100vh - 52px); }
 
         .sidebar { width: 240px; background: #34495e; color: #ecf0f1; position: fixed; top: 52px; bottom: 0; overflow-y: auto; padding-top: 8px; }
         .sidebar .menu-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #95a5a6; padding: 12px 16px 4px; }
-        .sidebar a { display: block; padding: 10px 16px; color: #bdc3c7; text-decoration: none; font-size: 14px; transition: background 0.15s; }
+        .sidebar .menu-label.menu-toggle { font-size: 16px; text-transform: capitalize; letter-spacing: normal; color: #bdc3c7; padding: 11px 16px; font-weight: 400; }
+        .sidebar a i.fa, .sidebar .menu-toggle i.fa { width: 20px; margin-right: 8px; text-align: center; font-size: 15px; color: #95a5a6; }
+        .sidebar a.active i.fa { color: #fff; }
+        .sidebar .menu-toggle > span:first-child { display: flex; align-items: center; }
+        .sidebar a { display: block; padding: 11px 16px; color: #bdc3c7; text-decoration: none; font-size: 16px; text-transform: capitalize; transition: background 0.15s; }
         .sidebar a:hover { background: #2c3e50; color: #fff; }
         .sidebar a.active { background: #2c3e50; color: #fff; border-left: 3px solid #3498db; padding-left: 13px; }
         .sidebar .submenu { display: none; overflow: hidden; }
         .sidebar .submenu.submenu-open { display: block; }
-        .sidebar .submenu a { padding-left: 32px; font-size: 13px; }
+        .sidebar .submenu a { padding-left: 32px; }
         .sidebar .menu-toggle { cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; }
         .sidebar .menu-toggle:hover { color: #ecf0f1; background: rgba(0,0,0,0.1); }
         .sidebar .menu-toggle .caret-icon { font-size: 10px; transition: transform 0.2s; pointer-events: none; }
@@ -42,10 +47,12 @@
         .no-sidebar .main-content { margin-left: 0; max-width: 100%; }
         .no-sidebar .sidebar { display: none; }
 
-        .alert { padding: 12px 16px; border-radius: 4px; margin-bottom: 16px; font-size: 14px; }
-        .alert-info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        .alert { padding: 12px 16px; border-radius: 4px; margin-bottom: 16px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+        .alert-info { background: #b10058; color: #fff; }
         .alert-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
         .alert-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .alert-close { cursor: pointer; font-size: 18px; line-height: 1; opacity: 0.8; }
+        .alert-close:hover { opacity: 1; }
         .card { background: #fff; border-radius: 6px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .card h3 { font-size: 14px; color: #666; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
         .card .value { font-size: 28px; font-weight: 700; color: #2c3e50; }
@@ -127,14 +134,62 @@
 
         .control-label { font-size:13px; font-weight:600; color:#555; margin-bottom:4px; }
         .input-height-30 { height:30px; padding:4px 8px; }
+
+        /* Chat widget */
+        #chat-toggle-btn { position:fixed; bottom:24px; right:24px; width:56px; height:56px; border-radius:50%; background:#2c3e50; color:#fff; border:none; box-shadow:0 4px 12px rgba(0,0,0,0.3); cursor:pointer; font-size:24px; z-index:500; display:flex; align-items:center; justify-content:center; }
+        #chat-toggle-btn:hover { background:#34495e; }
+        #chat-window { position:fixed; bottom:92px; right:24px; width:340px; max-width:calc(100vw - 32px); height:460px; max-height:calc(100vh - 120px); background:#fff; border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,0.3); display:none; flex-direction:column; z-index:500; overflow:hidden; }
+        #chat-window.open { display:flex; }
+        #chat-header { background:#2c3e50; color:#fff; padding:12px 16px; font-weight:600; display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+        #chat-header .chat-close { cursor:pointer; font-size:18px; line-height:1; }
+        #chat-messages { flex:1; overflow-y:auto; padding:12px; background:#f8f9fa; }
+        .chat-msg { margin-bottom:10px; font-size:13px; line-height:1.4; max-width:85%; padding:8px 12px; border-radius:10px; white-space:pre-wrap; }
+        .chat-msg.user { background:#2c3e50; color:#fff; margin-left:auto; border-bottom-right-radius:2px; }
+        .chat-msg.assistant { background:#e9ecef; color:#333; margin-right:auto; border-bottom-left-radius:2px; }
+        .chat-msg.system { background:transparent; color:#999; font-size:12px; text-align:center; max-width:100%; }
+        #chat-input-row { display:flex; border-top:1px solid #eee; padding:8px; gap:6px; }
+        #chat-input-row input { flex:1; border:1px solid #ddd; border-radius:16px; padding:8px 14px; font-size:13px; }
+        #chat-input-row button { background:#2c3e50; color:#fff; border:none; border-radius:16px; padding:8px 16px; font-size:13px; cursor:pointer; }
+        #chat-input-row button:disabled { opacity:0.6; cursor:default; }
+
+        /* Admin theme: matches the CakePHP admin panel's white/red color scheme */
+        .admin-theme .navbar { background: #fff; color: #212121; border-bottom: 1px solid #eee; }
+        .admin-theme .navbar h1 { color: #212121; }
+        .admin-theme .navbar .role-badge { background: #f1f1f1; color: #555; }
+        .admin-theme .navbar form button { background: #fff; border: 1px solid #ddd; color: #555; }
+        .admin-theme .navbar form button:hover { background: #f5f5f5; }
+        .admin-theme .sidebar { background: #fff; color: #212121; border-right: 1px solid #eee; }
+        .admin-theme .sidebar .menu-label { color: #dc0030; }
+        .admin-theme .sidebar .menu-label.menu-toggle { color: #212121; }
+        .admin-theme .sidebar a, .admin-theme .sidebar .menu-toggle { color: #212121; }
+        .admin-theme .sidebar a i.fa, .admin-theme .sidebar .menu-toggle i.fa { color: #878787; }
+        .admin-theme .sidebar a:hover, .admin-theme .sidebar .menu-toggle:hover { background: rgba(33,33,33,0.05); color: #212121; }
+        .admin-theme .sidebar a.active { background: #dc0030; color: #fff; border-left: none; padding-left: 16px; }
+        .admin-theme .sidebar a.active i.fa { color: #fff; }
+
+        /* Admin dashboard stat cards, colored to match the CakePHP dashboard */
+        .stat-cards-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .stat-card { border-radius: 4px; padding: 16px 18px; color: #fff; min-height: 110px; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+        .stat-card-red { background: #dc0030; }
+        .stat-card-yellow { background: #f2b701; }
+        .stat-card-green { background: #09a275; }
+        .stat-card-blue { background: #0f4fa8; }
+        .stat-card-top { display: flex; justify-content: space-between; align-items: flex-start; }
+        .stat-card-value { font-size: 28px; font-weight: 700; line-height: 1; }
+        .stat-card-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 6px; font-weight: 500; }
+        .stat-card-icon { font-size: 42px; opacity: 0.85; }
+        .stat-card-sub { margin-top: 14px; font-size: 13px; }
+        .stat-card-sub strong { font-weight: 700; }
     </style>
 </head>
 @php
     $isSocietyRole = Auth::check() && Auth::user()->role === 'Society';
+    $isAdminRole = Auth::check() && Auth::user()->role === 'Admin';
+    $showChatWidget = Auth::check() && in_array(Auth::user()->role, ['Society', 'Reseller', 'SubReseller'], true);
 @endphp
-<body class="{{ $isSocietyRole ? 'has-society-topbar' : '' }}">
+<body class="{{ $isSocietyRole ? 'has-society-topbar' : '' }} {{ $isAdminRole ? 'admin-theme' : '' }}">
     <nav class="navbar">
-        <h1>EasyLogics Technology</h1>
+        <h1><img src="{{ asset('images/fvcon.png') }}" alt="" style="height:32px; vertical-align:middle; margin-right:8px;">Easy Logics</h1>
         @auth
         <div class="user-info">
             @if($isSocietyRole)
@@ -154,7 +209,6 @@
                 @elseif($__assignedYears->count() == 1)
                 <span style="font-weight:600;">{{ $__assignedYears->first()->year }}</span>
                 @endif
-                <span style="font-weight:600; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ $__society->society_name ?? '' }}</span>
                 @if(session('reseller_id'))
                 <form method="POST" action="{{ route('reseller.switchBack') }}" style="display:inline;">
                     @csrf
@@ -182,34 +236,34 @@
     @if($isSocietyRole)
     <div class="society-topbar">
         <div class="menu-buttons">
-            <a href="javascript:void(0);" onclick="openModal('ledgerHeadsModal')">&#9745; Ledger Heads</a>
-            <a href="javascript:void(0);" onclick="openFlatShopModal();">&#9776; Flat / Shop Detail</a>
-            <a href="javascript:void(0);" onclick="openModal('billModal')">&#128196; Bill</a>
-            <a href="{{ route('society.memberReceipt') }}">&#128203; Member Receipts</a>
-            <a href="javascript:void(0);" onclick="openModal('paymentEntryModal')">&#8377; Payment Entry</a>
-            <a href="javascript:void(0);" onclick="openModal('generateBillModal')">&#128220; Generate Bill</a>
-            <a href="javascript:void(0);" onclick="openModal('printBillModal')">&#128424; Print Bill</a>
-            <a href="javascript:void(0);" onclick="openModal('emailBillModal')">&#9993; Email Bill</a>
-            <a href="#" style="background:#25D366;">&#128172; Send WhatsApp</a>
-            <a href="#" style="background:#3498db;">&#128233; Send SMS</a>
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_ledgerheads')) <a href="javascript:void(0);" onclick="openModal('ledgerHeadsModal')">&#9745; Ledger Heads</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_flatshop')) <a href="javascript:void(0);" onclick="openFlatShopModal();">&#9776; Flat / Shop Detail</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_bill')) <a href="javascript:void(0);" onclick="openModal('billModal')">&#128196; Bill</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_memberreceipts')) <a href="{{ route('society.memberReceipt') }}">&#128203; Member Receipts</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_paymententry')) <a href="javascript:void(0);" onclick="openModal('paymentEntryModal')">&#8377; Payment Entry</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_generatebill')) <a href="javascript:void(0);" onclick="openModal('generateBillModal')">&#128220; Generate Bill</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_printbill')) <a href="javascript:void(0);" onclick="openModal('printBillModal')">&#128424; Print Bill</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_emailbill')) <a href="javascript:void(0);" onclick="openModal('emailBillModal')">&#9993; Email Bill</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_whatsappbill')) <a href="#" style="background:#25D366;">&#128172; Send WhatsApp</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_sendsms')) <a href="#" style="background:#3498db;">&#128233; Send SMS</a> @endif
         </div>
     </div>
     @endif
 
-    <div class="app-wrapper @if(!Auth::check() || !in_array(Auth::user()->role, ['Admin','Society','Reseller','Member'])) no-sidebar @endif">
+    <div class="app-wrapper @if(!Auth::check() || !in_array(Auth::user()->role, ['Admin','Society','Reseller','SubReseller','Member'])) no-sidebar @endif">
         @auth
             @include('layouts.sidebar')
         @endauth
 
         <div class="main-content">
             @if(session('info'))
-                <div class="alert alert-info">{{ session('info') }}</div>
+                <div class="alert alert-info"><span>{{ session('info') }}</span><span class="alert-close" onclick="this.parentElement.style.display='none'">&times;</span></div>
             @endif
             @if(session('error'))
-                <div class="alert alert-error">{{ session('error') }}</div>
+                <div class="alert alert-error"><span>{{ session('error') }}</span><span class="alert-close" onclick="this.parentElement.style.display='none'">&times;</span></div>
             @endif
             @if(session('success'))
-                <div class="alert alert-success">{{ session('success') }}</div>
+                <div class="alert alert-success"><span>{{ session('success') }}</span><span class="alert-close" onclick="this.parentElement.style.display='none'">&times;</span></div>
             @endif
 
             @if($errors->any())
@@ -260,6 +314,22 @@ document.addEventListener('click', function(e) {
 });
 
 var csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+var memberPaymentEditUrlBase = "{{ rtrim(route('society.addMemberPayment', ''), '/') }}";
+
+// The society-topbar wraps its buttons onto more rows as they don't fit the
+// width available, so its height isn't fixed - a hardcoded 92px left a gap
+// (or an overlap) between it and the sidebar/main content whenever it wrapped
+// to more than one row. Measure it for real instead.
+function syncTopbarHeight() {
+    var navbar = document.querySelector('.navbar');
+    var topbar = document.querySelector('.society-topbar');
+    if (!navbar || !topbar) return;
+    var total = navbar.offsetHeight + topbar.offsetHeight;
+    document.documentElement.style.setProperty('--topbar-h', total + 'px');
+}
+syncTopbarHeight();
+window.addEventListener('load', syncTopbarHeight);
+window.addEventListener('resize', syncTopbarHeight);
 
 function loadWings(buildingId, selectId) {
     var sel = document.getElementById(selectId);
@@ -504,6 +574,11 @@ function getSocietyMemberDetails(societyMemberId) {
                 var particularHtml = entry.particular || '';
                 if (entry.flag === 'bill') {
                     particularHtml = '<a href="javascript:void(0);" onclick="loadBillModalFromFlatShop(' + entry.bill_id + ',' + entry.month + ');">' + particularHtml + '</a>';
+                } else if (entry.flag === 'receipt' && entry.payment_id) {
+                    // Same place the CakePHP app's cheque-return flow lives: opens the
+                    // payment's own edit page, which carries the Cheque Return Date/
+                    // Reason fields for marking that cheque as bounced.
+                    particularHtml = '<a href="' + memberPaymentEditUrlBase + '/' + entry.payment_id + '" title="Edit payment / mark cheque returned">' + particularHtml + '</a>';
                 }
 
                 tbody.innerHTML += '<tr>' +
@@ -705,6 +780,30 @@ function getAllMembersBillSummaryDetails(postStr) {
                 delBtn.style.display = resp.ifDelete == 1 ? '' : 'none';
             }
 
+            // Ported from Cake's getAllMembersBillSummaryDetails success handler
+            // (society_bills.js): oldUpdateAvailable only when the Current Bill Update
+            // parameter has never been configured (NULL); currentBillUpdateEnabled only
+            // when it's explicitly Yes, and then only the member's actual latest bill
+            // (isCurrentBill) gets the button - any other bill shows the locked label.
+            var updateBtn = document.getElementById('updateMemSum');
+            var manualBtn = document.getElementById('updateManualSum');
+            var currentBtn = document.getElementById('currentBillUpdateMemSum');
+            var lockedLabel = document.getElementById('historicalBillLockedLabel');
+            if (updateBtn) updateBtn.style.display = resp.oldUpdateAvailable == 1 ? '' : 'none';
+            if (resp.currentBillUpdateEnabled == 1 && resp.isCurrentBill == 1) {
+                if (currentBtn) currentBtn.style.display = '';
+                if (lockedLabel) lockedLabel.style.display = 'none';
+                if (manualBtn) manualBtn.style.display = '';
+            } else if (resp.currentBillUpdateEnabled == 1) {
+                if (currentBtn) currentBtn.style.display = 'none';
+                if (lockedLabel) lockedLabel.style.display = '';
+                if (manualBtn) manualBtn.style.display = 'none';
+            } else {
+                if (currentBtn) currentBtn.style.display = 'none';
+                if (lockedLabel) lockedLabel.style.display = 'none';
+                if (manualBtn) manualBtn.style.display = resp.oldUpdateAvailable == 1 ? '' : 'none';
+            }
+
             document.getElementById('bill_remarks').value = resp.MemberBillSummary.remarks || '';
             document.getElementById('member_bill_summary_month').value = resp.MemberBillSummary.month;
             document.getElementById('member_bill_summary_bill_no').value = resp.MemberBillSummary.bill_no;
@@ -729,7 +828,7 @@ function getAllMembersBillSummaryDetails(postStr) {
                     var item = resp.MemberTariff[i];
                     if (item.amount) {
                         totalAmt += parseFloat(item.amount);
-                        tariffBody.innerHTML += '<tr><td>' + item.tariff_serial + '</td><td>' + item.title + '</td><td style="text-align:right;">' + parseFloat(item.amount).toFixed(2) + '</td></tr>';
+                        tariffBody.innerHTML += '<tr><td>' + item.tariff_serial + '</td><td>' + item.title + '</td><td><input type="text" class="form-control text-right tariff-amount-input" data-ledger-head-id="' + item.ledger_head_id + '" value="' + parseFloat(item.amount).toFixed(2) + '"></td></tr>';
                     }
                 }
                 tariffBody.innerHTML += '<tr style="font-weight:bold;"><td></td><td>Total</td><td style="text-align:right;">' + totalAmt.toFixed(2) + '</td></tr>';
@@ -833,6 +932,22 @@ function societyMemberBillNext() {
     }
 }
 
+// Ported from Cake's $('#society_member_bill_summary').serialize(), which carries every
+// data[MemberTariff][ledger_head_id][amount] input in that form - the Particulars/Amount
+// lines are the only thing meant to be hand-edited on a bill; Bill Amount, arrears and
+// Amount Payable (readonly in the markup) are always derived from these plus the society's
+// current parameters, never typed directly.
+function collectTariffFieldsQueryString() {
+    var qs = '&bill_no=' + encodeURIComponent(document.getElementById('member_bill_summary_bill_no').value || '')
+        + '&month=' + encodeURIComponent(document.getElementById('member_bill_summary_month').value || '')
+        + '&bill_generated_date=' + encodeURIComponent(document.getElementById('member_bill_summary_bill_generated_date').value || '');
+    var inputs = document.querySelectorAll('.tariff-amount-input');
+    for (var i = 0; i < inputs.length; i++) {
+        qs += '&tariff[' + encodeURIComponent(inputs[i].getAttribute('data-ledger-head-id')) + ']=' + encodeURIComponent(inputs[i].value || 0);
+    }
+    return qs;
+}
+
 function updateMemberBillSummaryById() {
     var summaryId = document.getElementById('society_member_summary_id').value;
     if (!summaryId) { alert('No bill selected'); return; }
@@ -841,7 +956,8 @@ function updateMemberBillSummaryById() {
         + '&principal_adjusted=' + (document.getElementById('member_bill_summary_bill_principal_adjusted').value || 0)
         + '&interest_adjusted=' + (document.getElementById('member_bill_summary_bill_interest_adjusted').value || 0)
         + '&interest_on_due_amount=' + (document.getElementById('member_bill_summary_interest_on_due_amount').value || 0)
-        + '&member_id=' + (document.getElementById('member_bill_summary_member_id').value || '');
+        + '&member_id=' + (document.getElementById('member_bill_summary_member_id').value || '')
+        + collectTariffFieldsQueryString();
     fetch('/society/update-member-bill-summary', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-TOKEN': csrfToken},
@@ -854,6 +970,34 @@ function updateMemberBillSummaryById() {
             getAllMembersBillSummaryDetails('id=' + summaryId);
         } else {
             alert(resp.error_message || 'Could not update bill.');
+        }
+    })
+    .catch(function() { alert('Network error. Please try again.'); });
+}
+
+function updateCurrentMemberBillSummaryById() {
+    var summaryId = document.getElementById('society_member_summary_id').value;
+    if (!summaryId) { alert('No bill selected'); return; }
+    if (!confirm('Recalculate only this current/latest bill using the latest parameters? Previous bills will not be changed.')) { return; }
+    var postStr = 'id=' + summaryId
+        + '&discount=' + (document.getElementById('member_bill_summary_bill_discount').value || 0)
+        + '&principal_adjusted=' + (document.getElementById('member_bill_summary_bill_principal_adjusted').value || 0)
+        + '&interest_adjusted=' + (document.getElementById('member_bill_summary_bill_interest_adjusted').value || 0)
+        + '&interest_on_due_amount=' + (document.getElementById('member_bill_summary_interest_on_due_amount').value || 0)
+        + '&member_id=' + (document.getElementById('member_bill_summary_member_id').value || '')
+        + collectTariffFieldsQueryString();
+    fetch('/society/update-current-member-bill-summary', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-TOKEN': csrfToken},
+        body: postStr
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(resp) {
+        if (resp.error === 0) {
+            alert(resp.error_message || 'Current bill updated successfully.');
+            getAllMembersBillSummaryDetails('id=' + summaryId);
+        } else {
+            alert(resp.error_message || 'Current bill could not be updated.');
         }
     })
     .catch(function() { alert('Network error. Please try again.'); });
@@ -943,18 +1087,17 @@ function saveSocietyPayment() {
 }
 
 function printMemberBill() {
-    var params = 'building_id=' + (document.getElementById('pb_building_id').value || '') +
-        '&wing_id=' + (document.getElementById('pb_wing_id').value || '') +
-        '&month=' + (document.getElementById('pb_month').value || '') +
-        '&flat_no=' + (document.getElementById('pb_flat_no').value || '') +
-        '&format=' + (document.getElementById('pb_format').value || '1') +
-        '&bill_from=' + (document.getElementById('pb_bill_from').value || '') +
-        '&bill_to=' + (document.getElementById('pb_bill_to').value || '') +
-        '&receipt_from=' + (document.getElementById('pb_receipt_from').value || '') +
-        '&receipt_to=' + (document.getElementById('pb_receipt_to').value || '') +
-        '&unit_type=' + (document.getElementById('pb_unit_type').value || '') +
-        '&bill_type=' + (document.getElementById('pb_bill_type').value || 'regular');
-    window.open('/society/bill-with-receipt-tabular?' + params, '_blank');
+    // same query the CakePHP Print Bill form sends to society_bills/print_member_bills
+    var params = 'month=' + encodeURIComponent(document.getElementById('pb_month').value || '') +
+        '&flat_no=' + encodeURIComponent(document.getElementById('pb_flat_no').value || '') +
+        '&bill_from=' + encodeURIComponent(document.getElementById('pb_bill_from').value || '') +
+        '&bill_to=' + encodeURIComponent(document.getElementById('pb_bill_to').value || '') +
+        '&receipt_from=' + encodeURIComponent(document.getElementById('pb_receipt_from').value || '') +
+        '&receipt_to=' + encodeURIComponent(document.getElementById('pb_receipt_to').value || '') +
+        '&unit_type=' + encodeURIComponent(document.getElementById('pb_unit_type').value || 'Unit No') +
+        '&words_type=English&member_record=Current&bill_format_type=-1&billFormat=' +
+        '&bill_type=' + encodeURIComponent(document.getElementById('pb_bill_type').value || 'reg');
+    window.open('/society/bill-with-receipt-tabular/print?' + params, '_blank');
     closeModal('printBillModal');
 }
 
@@ -966,5 +1109,69 @@ function emailMemberBill() {
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 @yield('scripts')
+
+@if($showChatWidget)
+<button id="chat-toggle-btn" onclick="toggleChatWidget()" aria-label="Support chat">&#128172;</button>
+<div id="chat-window">
+    <div id="chat-header">
+        <span>Support Assistant</span>
+        <span class="chat-close" onclick="toggleChatWidget()">&times;</span>
+    </div>
+    <div id="chat-messages">
+        <div class="chat-msg system">Ask me anything about using EasyLogics.</div>
+    </div>
+    <div id="chat-input-row">
+        <input type="text" id="chat-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendChatMessage()">
+        <button id="chat-send-btn" onclick="sendChatMessage()">Send</button>
+    </div>
+</div>
+<script>
+function toggleChatWidget() {
+    document.getElementById('chat-window').classList.toggle('open');
+}
+
+function appendChatMessage(text, role) {
+    var box = document.getElementById('chat-messages');
+    var div = document.createElement('div');
+    div.className = 'chat-msg ' + role;
+    div.textContent = text;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+}
+
+function sendChatMessage() {
+    var input = document.getElementById('chat-input');
+    var btn = document.getElementById('chat-send-btn');
+    var message = input.value.trim();
+    if (!message) return;
+
+    appendChatMessage(message, 'user');
+    input.value = '';
+    btn.disabled = true;
+
+    fetch('{{ route("chat.send") }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        },
+        body: JSON.stringify({ message: message })
+    })
+    .then(function(r) { return r.json().then(function(data) { return { status: r.status, data: data }; }); })
+    .then(function(res) {
+        btn.disabled = false;
+        if (res.status !== 200) {
+            appendChatMessage(res.data.error || 'Something went wrong.', 'system');
+            return;
+        }
+        appendChatMessage(res.data.reply, 'assistant');
+    })
+    .catch(function() {
+        btn.disabled = false;
+        appendChatMessage('Network error. Please try again.', 'system');
+    });
+}
+</script>
+@endif
 </body>
 </html>

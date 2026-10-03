@@ -378,11 +378,12 @@
                 </div>
             </div>
             <center>
-                <button id="updateMemSum" type="button" class="btn btn-success btn-sm" onclick="updateMemberBillSummaryById();">Update</button>
-                <button id="InterestMemSum" type="button" class="btn btn-success btn-sm" onclick="updateMemberBillSummaryById();">Interest menualy</button>
+                <button id="updateMemSum" type="button" class="btn btn-success btn-sm" style="display:none;" onclick="updateMemberBillSummaryById();">Update</button>
+                <button id="currentBillUpdateMemSum" type="button" class="btn btn-success btn-sm" style="display:none;" title="Recalculates only this current/latest bill using the latest parameters. Never changes previous bills." onclick="updateCurrentMemberBillSummaryById();">Current Bill Update</button>
+                <span id="historicalBillLockedLabel" class="label label-default" style="display:none; padding:6px 10px;">Historical bill - locked</span>
                 <button id="delMemSum" type="button" class="btn btn-danger btn-sm" onclick="deleteMemberBillSummaryById();" ifpayment="0" style="display:none;">Delete</button>
                 <button type="button" class="btn btn-success btn-sm" onclick="closeModal('billModal');">Cancel</button>
-                <button id="updateManualSum" type="button" class="btn btn-warning btn-sm" onclick="updateManualInterest();">Manual Update Interest</button>
+                <button id="updateManualSum" type="button" class="btn btn-warning btn-sm" style="display:none;" onclick="updateManualInterest();">Manual Update Interest</button>
             </center>
         </form>
     </div>

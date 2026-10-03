@@ -8,6 +8,7 @@ use App\Models\ResellerSociety;
 use App\Models\Society;
 use App\Models\User;
 use App\Services\FinancialYearService;
+use App\Support\ResellerContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -22,7 +23,7 @@ class SocietyController extends Controller
                 'address' => 'required|string|max:300',
             ]);
 
-            $resellerId = Auth::id();
+            $resellerId = ResellerContext::id();
             $societyName = $request->input('society_name');
 
             $existingUser = User::where('username', $societyName)->first();
@@ -86,19 +87,19 @@ class SocietyController extends Controller
                 ->with('info', 'Society Created Successfully.');
         }
 
-        $reseller = Auth::user();
-        $creditInfo = [
-            'credit' => $reseller->member_credit,
-            'used' => $reseller->getTotalMembersUsed(),
-            'remaining' => $reseller->getRemainingCredit(),
-        ];
-
-        return view('reseller.societies.create', compact('creditInfo'));
+        return view('reseller.societies.create');
     }
 
     public function switchToSociety(Request $request, $societyId)
     {
-        $resellerId = Auth::id();
+        $resellerId = ResellerContext::id();
+
+        // A team login may only open the societies its reseller ticked for it (Permissions page).
+        $allowedSocietyIds = ResellerContext::allowedSocietyIds();
+        if ($allowedSocietyIds !== null && !in_array((int) $societyId, $allowedSocietyIds, true)) {
+            return redirect()->route('reseller.societies.assigned')
+                ->with('error', 'You do not have access to that society.');
+        }
 
         $assigned = ResellerSociety::where('reseller_id', $resellerId)
             ->where('societie_id', $societyId)
@@ -119,6 +120,8 @@ class SocietyController extends Controller
         }
 
         $request->session()->put('reseller_id', $resellerId);
+        // The login to return to (for a team login this is not the reseller itself)
+        $request->session()->put('reseller_login_id', Auth::id());
         $request->session()->put('reseller_username', Auth::user()->username);
 
         $request->session()->forget('fy');
@@ -159,24 +162,34 @@ class SocietyController extends Controller
             return redirect()->route('login');
         }
 
+        $loginId = $request->session()->get('reseller_login_id', $resellerId);
+
         $request->session()->forget('reseller_id');
+        $request->session()->forget('reseller_login_id');
         $request->session()->forget('reseller_username');
         $request->session()->forget('fy');
 
-        Auth::loginUsingId($resellerId);
+        Auth::loginUsingId($loginId);
 
         return redirect()->route('reseller.dashboard');
     }
 
     public function assigned(Request $request)
     {
-        $resellerId = Auth::id();
-        $reseller = Auth::user();
+        $resellerId = ResellerContext::id();
 
         $assignedSocieties = ResellerSociety::where('reseller_id', $resellerId)
-            ->with(['society:id,society_name,society_code,user_id,udate,enable_sms,whatsapp_enabled,mobile_app_enabled,status', 'society.user:id,username'])
+            ->with(['society:id,society_name,society_code,user_id,udate,enable_sms,status', 'society.user:id,username'])
             ->orderBy('id')
             ->get();
+
+        // A team login only sees the societies its reseller ticked for it - deny by default.
+        $allowedSocietyIds = ResellerContext::allowedSocietyIds();
+        if ($allowedSocietyIds !== null) {
+            $assignedSocieties = $assignedSocieties->filter(
+                fn ($row) => in_array((int) optional($row->society)->user_id, $allowedSocietyIds, true)
+            )->values();
+        }
 
         $societyMemberCounts = [];
         foreach ($assignedSocieties as $assigned) {
@@ -185,18 +198,12 @@ class SocietyController extends Controller
             }
         }
 
-        $creditInfo = [
-            'credit' => $reseller->member_credit,
-            'used' => $reseller->getTotalMembersUsed(),
-            'remaining' => $reseller->getRemainingCredit(),
-        ];
-
-        return view('reseller.societies.assigned', compact('assignedSocieties', 'societyMemberCounts', 'creditInfo'));
+        return view('reseller.societies.assigned', compact('assignedSocieties', 'societyMemberCounts'));
     }
 
     public function getAssignedYears($societyId)
     {
-        $resellerId = Auth::id();
+        $resellerId = ResellerContext::id();
 
         $assigned = ResellerSociety::where('reseller_id', $resellerId)
             ->where('societie_id', $societyId)

@@ -10,13 +10,14 @@ class CheckModulePermission
 {
     /**
      * Usage: CheckModulePermission::class . ':module,action'
-     * e.g. CheckModulePermission::class . ':members,can_view'
-     *      CheckModulePermission::class . ':bills,can_add'
+     * e.g. CheckModulePermission::class . ':software,view'
+     *      CheckModulePermission::class . ':software,add'
      *
-     * Reseller gets full access (bypass). ResellerUser checked against user_permissions table.
-     * All other roles pass through (their own middleware handles access).
+     * Reseller gets full access (bypass). SubReseller (a reseller's team login) is checked against the
+     * {module}_{action} flags of its reseller_sub_users row. All other roles pass through (their own
+     * middleware handles access).
      */
-    public function handle(Request $request, Closure $next, string $module, string $action = 'can_view'): Response
+    public function handle(Request $request, Closure $next, string $module, string $action = 'view'): Response
     {
         $user = $request->user();
 
@@ -24,7 +25,7 @@ class CheckModulePermission
             abort(403, 'Unauthorized.');
         }
 
-        if ($user->role !== 'ResellerUser') {
+        if ($user->role !== 'SubReseller') {
             return $next($request);
         }
 

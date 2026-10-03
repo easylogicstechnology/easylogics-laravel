@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Society;
 use App\Http\Controllers\Controller;
 use App\Models\AccountCategory;
 use App\Models\BillingFrequency;
+use App\Models\BillSettlementOrder;
 use App\Models\Bank;
 use App\Models\Building;
 use App\Models\CashWithdraw;
+use App\Models\ChequeReturnDetail;
 use App\Models\Employee;
 use App\Models\EmployeeCategory;
 use App\Models\EmployeeSubCategory;
@@ -24,6 +26,7 @@ use App\Models\MemberTariff;
 use App\Models\Society;
 use App\Models\SocietyHeadSubCategory;
 use App\Models\SocietyLedgerHead;
+use App\Models\SocietyOtherIncome;
 use App\Models\SocietyParameter;
 use App\Models\SocietyPayment;
 use App\Models\SocietyTariffOrder;
@@ -34,9 +37,17 @@ use App\Models\TariffType;
 use App\Models\MemberTariffDetail;
 use App\Models\Wing;
 use App\Services\BillSettlementService;
+use App\Support\JournalNotes;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use PhpOffice\PhpSpreadsheet\Cell\DataValidation;
+use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Style\Alignment;
+use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 
 class SocietyModuleController extends Controller
 {
@@ -48,6 +59,18 @@ class SocietyModuleController extends Controller
     private function societyId()
     {
         return Auth::id();
+    }
+
+    // Ported from Cake SocietysMembersController::_memberPaymentsLocked(): Current Bill
+    // Update = Yes means the old, full-chain recalculation (which add/edit/delete payment
+    // all trigger via recalculateMemberBills()) must never run again - so payment add, edit
+    // and delete are all locked while it's Yes, not just edit/delete of old rows. Cake does
+    // NOT lock bulk paste the same way (checked against its own bulk_paste_payment /
+    // bulk_paste_last_bill actions - neither has this guard), so this doesn't touch those.
+    private function paymentsLocked(): bool
+    {
+        $param = SocietyParameter::where('society_id', $this->societyId())->first();
+        return (int) ($param->current_bill_update_enabled ?? 0) === 1;
     }
 
     private function fyId()
@@ -75,11 +98,22 @@ class SocietyModuleController extends Controller
         return view('society.modules.identity', compact('society'));
     }
 
+    // Ported from Cake SocietysController::society_parameter(). Two fields on Cake's
+    // form - Penality and Both Interest And Penality - have no matching column in
+    // society_parameters (confirmed against the shared DB) and Cake's save() silently
+    // drops them; kept as display-only inputs here too, same as Cake. Settlement
+    // order (Principal/Interest/Tax) is a SEPARATE table (bill_settlement_order,
+    // keyed by society_id + is_active), not a society_parameters column - see
+    // Cake's manageSettlementOrder(). Current Bill Update needs a column
+    // (current_bill_update_enabled) that does not exist on this database yet either
+    // (same as Cake's own hasCurrentBillUpdateColumn() check) - disabled with the
+    // same explanatory message until that column is added, never silently dropped.
     public function parameters(Request $request)
     {
         $societyId = $this->societyId();
         $society = $this->getSociety();
         $params = SocietyParameter::where('society_id', $societyId)->first();
+        $hasCurrentBillUpdateColumn = Schema::hasColumn('society_parameters', 'current_bill_update_enabled');
 
         if ($request->isMethod('post')) {
             $data = $request->only([
@@ -89,13 +123,42 @@ class SocietyModuleController extends Controller
                 'show_bills_in_receipt', 'gst_interest', 'gst_interest_arreas',
                 'settlement', 'gst_limit',
             ]);
+
+            if ($hasCurrentBillUpdateColumn) {
+                $curBillUpdate = $request->input('current_bill_update_enabled', '');
+                $data['current_bill_update_enabled'] = $curBillUpdate === '' ? null : (int) $curBillUpdate;
+            }
+
+            foreach (['signature_image', 'scanner_image'] as $field) {
+                $file = $request->file($field);
+                if ($file) {
+                    $ext = strtolower($file->getClientOriginalExtension());
+                    if (!in_array($ext, ['jpg', 'jpeg', 'png'], true)) {
+                        return redirect()->route('society.parameters')->with('error', ucfirst(str_replace('_', ' ', $field)) . ' format type is not valid.');
+                    }
+                    $folder = $field === 'signature_image' ? 'society_signature' : 'payment_scanner';
+                    $filename = $societyId . '_' . uniqid() . '.' . $ext;
+                    $file->move(public_path("img/{$folder}/{$societyId}"), $filename);
+                    $data[$field . '_path'] = "img/{$folder}/{$societyId}/{$filename}";
+                }
+            }
+
             if ($params) {
                 $params->update($data);
             } else {
                 $data['society_id'] = $societyId;
-                SocietyParameter::create($data);
+                $params = SocietyParameter::create($data);
             }
-            return redirect()->route('society.parameters')->with('success', 'Parameters updated.');
+
+            $orderString = $request->input('sorted_order');
+            if ($orderString) {
+                BillSettlementOrder::updateOrCreate(
+                    ['society_id' => $societyId, 'is_active' => 1],
+                    ['settle_order' => $orderString]
+                );
+            }
+
+            return redirect()->route('society.parameters')->with('success', 'Society parameter has been set successfully.');
         }
 
         $billingFrequencies = BillingFrequency::all();
@@ -103,8 +166,16 @@ class SocietyModuleController extends Controller
         $interestMethods = InterestMethod::all();
         $tariffTypes = TariffType::all();
 
+        $settlementOrder = BillSettlementOrder::where('society_id', $societyId)->where('is_active', 1)->value('settle_order');
+        $settleOrder = $settlementOrder ? explode(',', $settlementOrder) : ['Tax', 'Interest', 'Principle'];
+        $orderMap = [];
+        foreach ($settleOrder as $idx => $component) {
+            $orderMap[$component] = $idx + 1;
+        }
+
         return view('society.modules.parameters', compact(
-            'society', 'params', 'billingFrequencies', 'interestTypes', 'interestMethods', 'tariffTypes'
+            'society', 'params', 'billingFrequencies', 'interestTypes', 'interestMethods', 'tariffTypes',
+            'hasCurrentBillUpdateColumn', 'orderMap'
         ));
     }
 
@@ -385,10 +456,730 @@ class SocietyModuleController extends Controller
         return redirect()->route('society.payments')->with('success', 'Payment deleted.');
     }
 
+    /**
+     * Port of SocietysAjaxController::getSocietyMembersOpBalance() - the member's latest bill summary of the current
+     * year (highest id), whose principal / interest / tax balances fill the Outstanding panel of Make Payment.
+     * Same JSON shape as Cake: {"MemberBillSummary": {...}}, or [] when the member has no bill summary.
+     */
+    public function getMemberOpBalance($memberId)
+    {
+        // FLOAT(15,2) columns: read them as text so they keep their two decimals
+        $row = MemberBillSummary::where('society_id', $this->societyId())
+            ->where('financial_year_id', $this->fyId())
+            ->where('member_id', $memberId)
+            ->orderByDesc('id')
+            ->selectRaw('id, CAST(principal_balance AS CHAR) AS principal_balance, CAST(interest_balance AS CHAR) AS interest_balance, CAST(tax_balance AS CHAR) AS tax_balance, CAST(balance_amount AS CHAR) AS balance_amount')
+            ->first();
+
+        return response()->json($row ? ['MemberBillSummary' => $row->toArray()] : []);
+    }
+
+    public function updatePaymentField(Request $request)
+    {
+        $societyId = $this->societyId();
+        $id = $request->input('id');
+        $field = $request->input('field');
+        $value = $request->input('value', '');
+        $allowedFields = ['payment_date', 'cheque_date', 'debited_date', 'cheque_reference_number', 'amount', 'tax_amount', 'total_amount'];
+
+        if ($id && $field && in_array($field, $allowedFields, true)) {
+            $dateFields = ['payment_date', 'cheque_date', 'debited_date'];
+            $numericFields = ['amount', 'tax_amount', 'total_amount'];
+            if (in_array($field, $dateFields, true)) {
+                $value = ($value !== '') ? $value : null;
+            } elseif (in_array($field, $numericFields, true)) {
+                $value = ($value !== '' && is_numeric($value)) ? (float) $value : 0;
+            }
+
+            $payment = SocietyPayment::where('id', $id)->where('society_id', $societyId)->first();
+            if ($payment) {
+                $payment->update([$field => $value]);
+                return response()->json(['error' => 0, 'error_message' => 'Updated successfully.']);
+            }
+        }
+
+        return response()->json(['error' => 1, 'error_message' => 'Could not update.']);
+    }
+
+    // ─── Bulk Paste Society Payment (Excel copy-paste grid) ──────────
+
+    private function societyExpenseLedgerHeadsList($societyId)
+    {
+        // "Debit To" list - income heads (account_category_id 3) excluded, same as
+        // SocietyBillComponent::societyAllLedgerHeadsLists() in the CakePHP app.
+        return SocietyLedgerHead::where('status', 1)
+            ->where('society_id', $societyId)
+            ->where('account_category_id', '!=', 3)
+            ->orderBy('title')
+            ->pluck('title', 'id');
+    }
+
+    private function societyBankBalanceHeadsList($societyId)
+    {
+        $subCategory = SocietyHeadSubCategory::where('title', 'LIKE', '%Bank Balances%')
+            ->where('status', 1)
+            ->orderBy('id')
+            ->first();
+        if (!$subCategory) return collect();
+
+        return SocietyLedgerHead::where('status', 1)
+            ->where('society_id', $societyId)
+            ->where('society_head_sub_category_id', $subCategory->id)
+            ->orderBy('title')
+            ->pluck('title', 'id');
+    }
+
+    private function societyCashBalanceHeadsList($societyId)
+    {
+        $subCategory = SocietyHeadSubCategory::where('title', 'LIKE', '%Cash Balance%')
+            ->where('status', 1)
+            ->orderBy('id')
+            ->first();
+        if (!$subCategory) return collect();
+
+        return SocietyLedgerHead::where('status', 1)
+            ->where('society_id', $societyId)
+            ->where('society_head_sub_category_id', $subCategory->id)
+            ->orderBy('title')
+            ->pluck('title', 'id');
+    }
+
+    private function nextBillVoucherNumber($societyId, $fyId)
+    {
+        $max = SocietyPayment::where('society_id', $societyId)
+            ->where('financial_year_id', $fyId)
+            ->max(DB::raw('CAST(bill_voucher_number AS UNSIGNED)'));
+
+        return ($max !== null && $max >= 0) ? ((int) $max + 1) : 1;
+    }
+
+    private function isDateInCurrentFinancialYear($date)
+    {
+        $yearStartDate = session('fy.year_start_date');
+        $yearEndDate = session('fy.year_end_date');
+        if (!$yearStartDate || !$yearEndDate) return true;
+
+        $ts = strtotime($date);
+        return $ts !== false && $ts >= strtotime($yearStartDate) && $ts <= strtotime($yearEndDate);
+    }
+
+    // Port of SocietysController::_parseExcelDate() from the CakePHP app -
+    // must accept the same date shapes (Excel serial numbers, ISO, DD/MM/YYYY,
+    // DD-Mon-YYYY) so pasted data behaves identically in both apps.
+    private function parseExcelDate($dateValue)
+    {
+        if (empty($dateValue)) return '';
+        $dateValue = trim($dateValue);
+
+        if (is_numeric($dateValue) && $dateValue > 25000) {
+            try {
+                $dt = ExcelDate::excelToDateTimeObject((float) $dateValue);
+                return $dt->format('Y-m-d');
+            } catch (\Throwable $e) {
+                return '';
+            }
+        }
+
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $dateValue, $m)) {
+            return checkdate((int) $m[2], (int) $m[3], (int) $m[1]) ? $dateValue : '';
+        }
+
+        if (preg_match('/^(\d{1,2})[\s\-\/\.]+([A-Za-z]{3,9})[\s\-\/\.]+(\d{2,4})$/', $dateValue, $m)) {
+            $dd = (int) $m[1];
+            $monthTs = strtotime($m[2] . ' 1 2000');
+            $mm = $monthTs !== false ? (int) date('n', $monthTs) : 0;
+            $yy = $m[3];
+            if (strlen($yy) != 4) {
+                $dt = \DateTime::createFromFormat('y', $yy);
+                $yy = $dt ? (int) $dt->format('Y') : (int) ('20' . $yy);
+            } else {
+                $yy = (int) $yy;
+            }
+            return ($mm > 0 && checkdate($mm, $dd, $yy))
+                ? $yy . '-' . str_pad($mm, 2, '0', STR_PAD_LEFT) . '-' . str_pad($dd, 2, '0', STR_PAD_LEFT)
+                : '';
+        }
+
+        if (strstr($dateValue, '/') || strstr($dateValue, '-')) {
+            $sep = strstr($dateValue, '/') ? '/' : '-';
+            $parts = explode($sep, $dateValue);
+            if (count($parts) == 3 && is_numeric($parts[0]) && is_numeric($parts[1]) && is_numeric($parts[2])) {
+                [$dd, $mm, $yy] = $parts;
+                $dd = (int) $dd;
+                $mm = (int) $mm;
+                if (strlen($yy) != 4) {
+                    $dt = \DateTime::createFromFormat('y', $yy);
+                    $yy = $dt ? (int) $dt->format('Y') : (int) ('20' . $yy);
+                } else {
+                    $yy = (int) $yy;
+                }
+                if ($mm > 12 && $dd <= 12) { $tmp = $dd; $dd = $mm; $mm = $tmp; }
+                if (checkdate($mm, $dd, $yy)) {
+                    return $yy . '-' . str_pad($mm, 2, '0', STR_PAD_LEFT) . '-' . str_pad($dd, 2, '0', STR_PAD_LEFT);
+                }
+            }
+            return '';
+        }
+
+        $ts = strtotime($dateValue);
+        if ($ts !== false) {
+            $result = date('Y-m-d', $ts);
+            [$ry, $rm, $rd] = explode('-', $result);
+            return checkdate((int) $rm, (int) $rd, (int) $ry) ? $result : '';
+        }
+
+        return '';
+    }
+
+    public function bulkPastePayments()
+    {
+        $societyId = $this->societyId();
+
+        $societyExpenseLedgerHeadsLists = $this->societyExpenseLedgerHeadsList($societyId);
+        $societyBankBalanceHeadsLists = $this->societyBankBalanceHeadsList($societyId);
+        $societyCashBalanceHeadsLists = $this->societyCashBalanceHeadsList($societyId);
+
+        return view('society.modules.bulk-paste-payments', compact(
+            'societyExpenseLedgerHeadsLists', 'societyBankBalanceHeadsLists', 'societyCashBalanceHeadsLists'
+        ));
+    }
+
+    public function saveBulkPastePayments(Request $request)
+    {
+        set_time_limit(0);
+        $societyId = $this->societyId();
+        $fyId = $this->fyId();
+
+        $postData = json_decode($request->getContent(), true);
+        if (empty($postData)) $postData = $request->all();
+
+        $rows = $postData['rows'] ?? [];
+        $defaultBankAccountId = $postData['default_bank_account_id'] ?? '';
+        $defaultCashAccountId = $postData['default_cash_account_id'] ?? '';
+
+        if (empty($rows)) {
+            return response()->json(['success' => false, 'message' => 'No rows to save.']);
+        }
+
+        $societyParameter = SocietyParameter::where('society_id', $societyId)->first();
+        if (!$societyParameter) {
+            return response()->json(['success' => false, 'message' => 'Society parameters not configured. Cannot save payments.']);
+        }
+
+        $ledgerHeadsByTitle = [];
+        foreach ($this->societyExpenseLedgerHeadsList($societyId) as $lid => $ltitle) {
+            $ledgerHeadsByTitle[strtoupper(trim($ltitle))] = $lid;
+        }
+
+        $bankByTitle = [];
+        foreach ($this->societyBankBalanceHeadsList($societyId) as $bid => $btitle) {
+            $bankByTitle[strtoupper(trim($btitle))] = $bid;
+        }
+        $cashByTitle = [];
+        foreach ($this->societyCashBalanceHeadsList($societyId) as $cid => $ctitle) {
+            $cashByTitle[strtoupper(trim($ctitle))] = $cid;
+        }
+        $allByTitle = $bankByTitle + $cashByTitle;
+
+        // "Direct Expense" (society_id 0, shared) is the default sub-category for
+        // an auto-created expense head from a paste - mirrors the CakePHP logic.
+        $defaultExpenseSubCategory = SocietyHeadSubCategory::where('title', 'Direct Expense')
+            ->where('account_category_id', 4)
+            ->where('account_head_id', 16)
+            ->where('society_id', 0)
+            ->where('status', 1)
+            ->first();
+        $defaultExpenseSubCategoryId = $defaultExpenseSubCategory->id ?? 0;
+
+        $billVoucherNumber = $this->nextBillVoucherNumber($societyId, $fyId);
+        $seenVouchers = [];
+
+        $results = [];
+        $added = 0;
+        $failed = 0;
+
+        foreach ($rows as $idx => $row) {
+            $errors = [];
+
+            $ledgerTitle = trim($row['paid_to'] ?? '');
+            $particulars = trim($row['particulars'] ?? '');
+            $voucherNo = trim($row['bill_voucher_number'] ?? '');
+            $paymentDateRaw = trim($row['payment_date'] ?? '');
+            $chequeDateRaw = trim($row['cheque_date'] ?? '');
+            $chequeNo = trim($row['cheque_number'] ?? '');
+            $amountRaw = trim(str_replace(',', '', $row['amount'] ?? ''));
+            $taxAmountRaw = trim(str_replace(',', '', $row['tax_amount'] ?? ''));
+            $paymentTypeRaw = trim($row['payment_type'] ?? '');
+            $paidFromName = trim($row['paid_from'] ?? '');
+            $notes = trim($row['notes'] ?? '');
+
+            if (empty($ledgerTitle)) $errors[] = 'Paid To is required';
+            if ($amountRaw === '' || !is_numeric($amountRaw) || (float) $amountRaw <= 0) $errors[] = 'Valid amount required';
+
+            $paymentDate = $this->parseExcelDate($paymentDateRaw);
+            if (empty($paymentDate)) {
+                $errors[] = 'Invalid/missing Payment Date';
+            } elseif (!$this->isDateInCurrentFinancialYear($paymentDate)) {
+                $errors[] = 'Payment Date not in current financial year';
+            }
+
+            if (!empty($voucherNo) && isset($seenVouchers[$voucherNo])) {
+                $errors[] = 'Duplicate Bill Voucher No in this batch';
+            }
+
+            if (!empty($errors)) {
+                $results[] = ['row' => $idx, 'status' => 'error', 'errors' => $errors];
+                $failed++;
+                continue;
+            }
+
+            $ledgerKey = strtoupper($ledgerTitle);
+            if (isset($ledgerHeadsByTitle[$ledgerKey])) {
+                $ledgerHeadId = $ledgerHeadsByTitle[$ledgerKey];
+            } else {
+                $newLedger = SocietyLedgerHead::create([
+                    'title' => $ledgerTitle,
+                    'short_code' => strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $ledgerTitle), 0, 10)),
+                    'society_head_sub_category_id' => $defaultExpenseSubCategoryId,
+                    'account_category_id' => 4,
+                    'account_head_id' => 16,
+                    'society_id' => $societyId,
+                    'financial_year_id' => $fyId,
+                    'opening_amount' => 0,
+                    'status' => 1,
+                ]);
+                if ($newLedger) {
+                    $ledgerHeadId = $newLedger->id;
+                    $ledgerHeadsByTitle[$ledgerKey] = $ledgerHeadId;
+                } else {
+                    $results[] = ['row' => $idx, 'status' => 'error', 'errors' => ['Could not create expense head "' . $ledgerTitle . '"']];
+                    $failed++;
+                    continue;
+                }
+            }
+
+            $paymentTypeUpper = strtoupper($paymentTypeRaw);
+            if ($paymentTypeRaw === 'Bank' || $paymentTypeRaw === 'Cash') {
+                $paymentType = $paymentTypeRaw;
+            } elseif ($paymentTypeUpper === 'CASH') {
+                $paymentType = 'Cash';
+            } else {
+                $paymentType = 'Bank';
+            }
+
+            $paymentByLedgerId = 0;
+            if (!empty($paidFromName)) {
+                $byKey = strtoupper($paidFromName);
+                if ($paymentType == 'Bank' && isset($bankByTitle[$byKey])) {
+                    $paymentByLedgerId = $bankByTitle[$byKey];
+                } elseif ($paymentType == 'Cash' && isset($cashByTitle[$byKey])) {
+                    $paymentByLedgerId = $cashByTitle[$byKey];
+                } elseif (isset($allByTitle[$byKey])) {
+                    $paymentByLedgerId = $allByTitle[$byKey];
+                }
+            }
+            if (empty($paymentByLedgerId)) {
+                $paymentByLedgerId = ($paymentType == 'Bank') ? $defaultBankAccountId : $defaultCashAccountId;
+            }
+            if (empty($paymentByLedgerId)) {
+                $results[] = ['row' => $idx, 'status' => 'error', 'errors' => [
+                    ($paymentType == 'Bank' ? 'Bank' : 'Cash') . ' account not selected/matched for "Paid From"'
+                ]];
+                $failed++;
+                continue;
+            }
+
+            $chequeDate = $this->parseExcelDate($chequeDateRaw);
+
+            $amount = (float) $amountRaw;
+            $taxAmount = ($taxAmountRaw !== '' && is_numeric($taxAmountRaw)) ? (float) $taxAmountRaw : 0.00;
+            $totalAmount = $amount - $taxAmount;
+
+            $finalVoucherNo = $voucherNo;
+            if (!empty($voucherNo)) {
+                $seenVouchers[$voucherNo] = true;
+            } else {
+                $finalVoucherNo = (string) $billVoucherNumber;
+            }
+
+            $payment = SocietyPayment::create([
+                'ledger_head_id' => $ledgerHeadId,
+                'payment_date' => $paymentDate,
+                'payment_type' => $paymentType,
+                'payment_by_ledger_id' => $paymentByLedgerId,
+                'amount' => $amount,
+                'tax_amount' => $taxAmount,
+                'total_amount' => $totalAmount,
+                'cheque_reference_number' => $chequeNo,
+                'cheque_date' => $chequeDate ?: null,
+                'bill_voucher_number' => $finalVoucherNo,
+                'particulars' => $particulars,
+                'notes' => $notes,
+                'society_id' => $societyId,
+                'financial_year_id' => $fyId,
+                'tds_account_id' => 0,
+                'status' => 1,
+            ]);
+
+            if ($payment) {
+                $added++;
+                if (empty($voucherNo)) $billVoucherNumber++;
+                $results[] = ['row' => $idx, 'status' => 'success', 'voucher_no' => $finalVoucherNo];
+            } else {
+                $failed++;
+                $results[] = ['row' => $idx, 'status' => 'error', 'errors' => ['Database save failed']];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'added' => $added,
+            'failed' => $failed,
+            'total' => count($rows),
+            'results' => $results,
+        ]);
+    }
+
+    public function downloadSampleSocietyPaymentTemplate()
+    {
+        $societyId = $this->societyId();
+
+        $societyExpenseLedgerHeadsLists = $this->societyExpenseLedgerHeadsList($societyId);
+        $societyBankLists = $this->societyBankBalanceHeadsList($societyId);
+        $societyCashLists = $this->societyCashBalanceHeadsList($societyId);
+
+        $allByNames = [];
+        foreach ($societyBankLists as $title) {
+            $allByNames[] = $title;
+        }
+        foreach ($societyCashLists as $title) {
+            if (!in_array($title, $allByNames)) $allByNames[] = $title;
+        }
+
+        $spreadsheet = new Spreadsheet();
+        $spreadsheet->getDefaultStyle()->getFont()->setName('Arial')->setSize(9);
+        $spreadsheet->getDefaultStyle()->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
+        $spreadsheet->getDefaultStyle()->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT)->setVertical(Alignment::VERTICAL_CENTER);
+
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Society Payment');
+        $sheet->freezePane('A2');
+        $sheet->getSheetView()->setZoomScale(100);
+
+        $headerRow = ['DebitTo', 'PaymentDate', 'PaymentType', 'PaymentBy', 'Amount', 'TaxAmount', 'Particulars', 'ChequeNo', 'ChequeDate', 'VoucherNo', 'Notes'];
+        foreach ($headerRow as $i => $h) {
+            $col = chr(65 + $i);
+            $sheet->setCellValue($col . '1', $h);
+            $sheet->getStyle($col . '1')->getFont()->setBold(true)->setSize(12);
+        }
+
+        $lastRow = count($societyExpenseLedgerHeadsLists) + 1;
+        $rowNum = 2;
+        foreach ($societyExpenseLedgerHeadsLists as $id => $title) {
+            $sheet->setCellValue('A' . $rowNum, $title);
+            $rowNum++;
+        }
+        if ($lastRow < 2) $lastRow = 2;
+
+        // PaymentDate - date format + validation (Column B)
+        $sheet->getStyle('B2:B' . $lastRow)->getNumberFormat()->setFormatCode('DD/MM/YYYY');
+        for ($r = 2; $r <= $lastRow; $r++) {
+            $dv = $sheet->getCell('B' . $r)->getDataValidation();
+            $dv->setType(DataValidation::TYPE_DATE);
+            $dv->setErrorStyle(DataValidation::STYLE_STOP);
+            $dv->setAllowBlank(true);
+            $dv->setShowErrorMessage(true);
+            $dv->setErrorTitle('Invalid Date');
+            $dv->setError('Please enter a valid date (DD/MM/YYYY).');
+            $dv->setShowInputMessage(true);
+            $dv->setPromptTitle('Payment Date');
+            $dv->setPrompt('Enter payment date in DD/MM/YYYY format.');
+        }
+
+        // PaymentType - dropdown Bank/Cash (Column C)
+        for ($r = 2; $r <= $lastRow; $r++) {
+            $dv = $sheet->getCell('C' . $r)->getDataValidation();
+            $dv->setType(DataValidation::TYPE_LIST);
+            $dv->setErrorStyle(DataValidation::STYLE_STOP);
+            $dv->setAllowBlank(true);
+            $dv->setShowDropDown(true);
+            $dv->setShowErrorMessage(true);
+            $dv->setErrorTitle('Invalid Payment Type');
+            $dv->setError('Please select Bank or Cash.');
+            $dv->setFormula1('"Bank,Cash"');
+        }
+
+        // PaymentBy - dropdown of bank + cash names (Column D)
+        $byNamesStr = implode(',', $allByNames);
+        for ($r = 2; $r <= $lastRow; $r++) {
+            $dv = $sheet->getCell('D' . $r)->getDataValidation();
+            $dv->setType(DataValidation::TYPE_LIST);
+            $dv->setErrorStyle(DataValidation::STYLE_STOP);
+            $dv->setAllowBlank(true);
+            $dv->setShowDropDown(true);
+            $dv->setShowErrorMessage(true);
+            $dv->setErrorTitle('Invalid Bank/Cash Name');
+            $dv->setError('Please select a valid Bank or Cash account name.');
+            $dv->setShowInputMessage(true);
+            $dv->setPromptTitle('Payment By');
+            $dv->setPrompt('Select the Bank or Cash account.');
+            $dv->setFormula1('"' . $byNamesStr . '"');
+        }
+
+        // ChequeDate - date format + validation (Column I)
+        $sheet->getStyle('I2:I' . $lastRow)->getNumberFormat()->setFormatCode('DD/MM/YYYY');
+        for ($r = 2; $r <= $lastRow; $r++) {
+            $dv = $sheet->getCell('I' . $r)->getDataValidation();
+            $dv->setType(DataValidation::TYPE_DATE);
+            $dv->setErrorStyle(DataValidation::STYLE_STOP);
+            $dv->setAllowBlank(true);
+            $dv->setShowErrorMessage(true);
+            $dv->setErrorTitle('Invalid Date');
+            $dv->setError('Please enter a valid date (DD/MM/YYYY).');
+            $dv->setShowInputMessage(true);
+            $dv->setPromptTitle('Cheque Date');
+            $dv->setPrompt('Enter cheque date in DD/MM/YYYY format.');
+        }
+
+        $widths = ['A' => 30, 'B' => 15, 'C' => 15, 'D' => 20, 'E' => 12, 'F' => 12, 'G' => 20, 'H' => 15, 'I' => 15, 'J' => 12, 'K' => 20];
+        foreach ($widths as $col => $w) {
+            $sheet->getColumnDimension($col)->setWidth($w);
+        }
+
+        // Reference sheet with ledger heads and bank/cash names
+        $refSheet = $spreadsheet->createSheet();
+        $refSheet->setTitle('Reference');
+        $refSheet->setCellValue('A1', 'Ledger Head Name');
+        $refSheet->setCellValue('B1', 'Bank Accounts');
+        $refSheet->setCellValue('C1', 'Cash Accounts');
+        $refSheet->getStyle('A1:C1')->getFont()->setBold(true)->setSize(12);
+        $refSheet->getColumnDimension('A')->setWidth(30);
+        $refSheet->getColumnDimension('B')->setWidth(25);
+        $refSheet->getColumnDimension('C')->setWidth(25);
+
+        $refRow = 2;
+        foreach ($societyExpenseLedgerHeadsLists as $id => $title) {
+            $refSheet->setCellValue('A' . $refRow, $title);
+            $refRow++;
+        }
+        $refRow = 2;
+        foreach ($societyBankLists as $id => $title) {
+            $refSheet->setCellValue('B' . $refRow, $title);
+            $refRow++;
+        }
+        $refRow = 2;
+        foreach ($societyCashLists as $id => $title) {
+            $refSheet->setCellValue('C' . $refRow, $title);
+            $refRow++;
+        }
+
+        $spreadsheet->setActiveSheetIndex(0);
+
+        $filename = 'SampleImportSocietyPayment.xlsx';
+        $writer = new Xlsx($spreadsheet);
+
+        return response()->streamDownload(function () use ($writer) {
+            $writer->save('php://output');
+        }, $filename, [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ]);
+    }
+
     public function bankReconciliation()
     {
         return view('society.modules.placeholder', [
             'title' => 'Bank Reconciliation',
+        ]);
+    }
+
+    public function memberReceiptBulkPaste()
+    {
+        $societyId = $this->societyId();
+
+        $societyBankLists = $this->societyBankBalanceHeadsList($societyId);
+        $societyCashLists = $this->societyCashBalanceHeadsList($societyId);
+        $membersList = Member::where('society_id', $societyId)->where('status', 1)->pluck('id', 'flat_no');
+
+        return view('society.modules.member-receipt-bulk-paste', compact(
+            'societyBankLists', 'societyCashLists', 'membersList'
+        ));
+    }
+
+    // Port of SocietysMembersController::_extractReceiptNumber() - pasted
+    // receipt numbers often carry a prefix like "BR/04/000145"; pull the
+    // trailing digit run out since receipt_id is a strict int column.
+    private function extractReceiptNumber($raw)
+    {
+        $raw = trim($raw);
+        if ($raw === '') return '';
+        if (is_numeric($raw)) return (string) intval($raw);
+        if (preg_match_all('/\d+/', $raw, $matches) && !empty($matches[0])) {
+            return (string) intval(end($matches[0]));
+        }
+        return '';
+    }
+
+    public function saveMemberReceiptBulkPaste(Request $request)
+    {
+        set_time_limit(0);
+        $societyId = $this->societyId();
+        $fyId = $this->fyId();
+
+        $postData = json_decode($request->getContent(), true);
+        if (empty($postData)) $postData = $request->all();
+
+        $rows = $postData['rows'] ?? [];
+        $cashAccountId = $postData['cash_account_id'] ?? 0;
+        $bankAccountId = $postData['bank_account_id'] ?? 0;
+
+        if (empty($rows)) {
+            return response()->json(['success' => false, 'message' => 'No rows to save.']);
+        }
+
+        $existingReceiptsArr = array_flip(
+            MemberPayment::where('society_id', $societyId)
+                ->where('financial_year_id', $fyId)
+                ->pluck('receipt_id')
+                ->map(fn ($v) => (string) $v)
+                ->all()
+        );
+
+        $membersList = [];
+        foreach (Member::where('society_id', $societyId)->where('status', 1)->get(['id', 'flat_no']) as $m) {
+            $membersList[trim($m->flat_no)] = $m->id;
+        }
+
+        $settlementService = app(\App\Services\BillSettlementService::class);
+
+        $results = [];
+        $addedCount = 0;
+        $failedCount = 0;
+        $usedReceiptIds = [];
+
+        foreach ($rows as $index => $row) {
+            $errors = [];
+
+            $flatNo = trim($row['flat_number'] ?? '');
+            $receiptNoRaw = trim($row['receipt_number'] ?? '');
+            $receiptNo = $this->extractReceiptNumber($receiptNoRaw);
+            if (!empty($receiptNoRaw) && $receiptNo === '') {
+                $errors[] = 'Could not read a number from Receipt Number: ' . $receiptNoRaw;
+            }
+            $receiptDate = trim($row['receipt_date'] ?? '');
+            $chequeNo = trim($row['cheque_number'] ?? '');
+            $chequeDate = trim($row['cheque_date'] ?? '');
+            $upi = trim($row['upi'] ?? '');
+            $amount = trim(str_replace(',', '', $row['amount'] ?? ''));
+            $remarks = trim($row['remarks'] ?? '');
+
+            if (empty($flatNo)) $errors[] = 'Flat Number required';
+            if (empty($receiptDate)) $errors[] = 'Receipt Date required';
+            if ($amount === '' || !is_numeric($amount) || (float) $amount <= 0) $errors[] = 'Valid Amount required';
+
+            $memberId = 0;
+            if (!empty($flatNo)) {
+                if (isset($membersList[$flatNo])) {
+                    $memberId = $membersList[$flatNo];
+                } else {
+                    $errors[] = 'Flat Number not found: ' . $flatNo;
+                }
+            }
+
+            $parsedReceiptDate = $this->parseExcelDate($receiptDate);
+            if (!empty($receiptDate) && empty($parsedReceiptDate)) {
+                $errors[] = 'Invalid Receipt Date format';
+            } elseif (!empty($parsedReceiptDate) && !$this->isDateInCurrentFinancialYear($parsedReceiptDate)) {
+                $errors[] = 'Receipt Date not in current financial year';
+            }
+
+            $parsedChequeDate = '';
+            if (!empty($chequeDate)) {
+                $parsedChequeDate = $this->parseExcelDate($chequeDate);
+                if (empty($parsedChequeDate)) {
+                    $errors[] = 'Invalid Cheque Date format';
+                }
+            }
+
+            if (!empty($receiptNo) && (isset($existingReceiptsArr[$receiptNo]) || isset($usedReceiptIds[$receiptNo]))) {
+                $errors[] = 'Duplicate Receipt Number: ' . $receiptNo;
+            }
+
+            if (!empty($errors)) {
+                $failedCount++;
+                $results[] = ['row' => $index, 'status' => 'error', 'errors' => $errors];
+                continue;
+            }
+
+            $paymentMode = 1;
+            $chequeRef = '';
+            if (!empty($chequeNo)) {
+                $paymentMode = is_numeric($chequeNo) ? 3 : 4;
+                $chequeRef = $chequeNo;
+            } elseif (!empty($upi)) {
+                $paymentMode = 2;
+                $chequeRef = $upi;
+            }
+
+            $societyBankId = ($paymentMode == 1) ? $cashAccountId : $bankAccountId;
+            if (empty($societyBankId)) {
+                $failedCount++;
+                $results[] = ['row' => $index, 'status' => 'error', 'errors' => [
+                    $paymentMode == 1 ? 'Cash Account not selected' : 'Bank Account not selected'
+                ]];
+                continue;
+            }
+
+            if (empty($receiptNo)) {
+                $receiptNo = (string) ((MemberPayment::where('society_id', $societyId)->max('receipt_id') ?? 0) + 1);
+                while (isset($usedReceiptIds[$receiptNo]) || isset($existingReceiptsArr[$receiptNo])) {
+                    $receiptNo = (string) ((int) $receiptNo + 1);
+                }
+            }
+            $usedReceiptIds[$receiptNo] = true;
+
+            $memberTransfer = $settlementService->getLatestTransferNo($memberId, $societyId);
+
+            $payment = MemberPayment::create([
+                'society_id' => $societyId,
+                'member_id' => $memberId,
+                'receipt_id' => $receiptNo,
+                'amount_paid' => (float) $amount,
+                'bill_month' => date('m', strtotime($parsedReceiptDate)),
+                'payment_mode' => $paymentMode,
+                'cheque_reference_number' => $chequeRef,
+                'payment_date' => $parsedReceiptDate,
+                'entry_date' => !empty($parsedChequeDate) ? $parsedChequeDate : now(),
+                'society_bank_id' => $societyBankId,
+                'member_bank_id' => 0,
+                'bill_type' => 'reg',
+                'narration' => $remarks,
+                'financial_year_id' => $fyId,
+                'member_transfer' => $memberTransfer,
+            ]);
+
+            if ($payment) {
+                $addedCount++;
+                $settlementService->recalculateMemberBills($memberId, $societyId, 'reg', $fyId, $memberTransfer);
+                $results[] = ['row' => $index, 'status' => 'success', 'receipt_id' => $receiptNo, 'payment_id' => $payment->id];
+            } else {
+                $failedCount++;
+                $results[] = ['row' => $index, 'status' => 'error', 'errors' => ['Database save failed']];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'total' => count($rows),
+            'added' => $addedCount,
+            'failed' => $failedCount,
+            'results' => $results,
+        ]);
+    }
+
+    public function recalculateBills()
+    {
+        return view('society.modules.placeholder', [
+            'title' => 'Recalculate Bills',
         ]);
     }
 
@@ -405,10 +1196,497 @@ class SocietyModuleController extends Controller
         return view('society.modules.cash-contra', compact('items', 'fyId'));
     }
 
+    // Port of SocietysController::add_cash_withdraws() / delete_cash_withdraws()
+    // (CakePHP). One "Type" field (Contra/Deposit/Withdraw) drives the whole
+    // form - only Contra needs the second "Transfer to Bank" ledger.
+    public function addCashContra(Request $request, $id = null)
+    {
+        $societyId = $this->societyId();
+        $fyId = $this->fyId();
+        $societyBankBalanceHeadsLists = $this->societyBankBalanceHeadsList($societyId);
+        $editItem = $id ? CashWithdraw::where('id', $id)->where('society_id', $societyId)->first() : null;
+
+        if ($request->isMethod('post')) {
+            $data = $request->only([
+                'txn_type', 'payment_date', 'bank_ledger_head_id', 'bank_to_ledger_head_id',
+                'amount', 'cheque_no', 'particulars', 'narration',
+            ]);
+            $data['society_id'] = $societyId;
+            $data['financial_year_id'] = $fyId;
+            $txnTypeLabel = ucfirst($data['txn_type'] ?? '');
+
+            if (!$this->isDateInCurrentFinancialYear($data['payment_date'] ?? '')) {
+                return redirect()->route('society.cashContra')->with('error', $txnTypeLabel . ' could not be saved! Check payment date.');
+            }
+
+            if ($editItem) {
+                $editItem->update($data);
+            } else {
+                CashWithdraw::create($data);
+            }
+
+            return redirect()->route('society.cashContra')->with('success', $txnTypeLabel . ' added successfully.');
+        }
+
+        return view('society.modules.add-cash-contra', compact('societyBankBalanceHeadsLists', 'editItem'));
+    }
+
+    public function deleteCashContra($id)
+    {
+        $societyId = $this->societyId();
+        $deleted = CashWithdraw::where('id', $id)->where('society_id', $societyId)->delete();
+
+        if ($deleted) {
+            return redirect()->route('society.cashContra')->with('success', 'Record has been deleted.');
+        }
+        return redirect()->route('society.cashContra')->with('error', 'Record could not be deleted.');
+    }
+
+    // ─── Registers / TDS / GST / Help (sidebar groups present in the CakePHP
+    // menu but not yet built out here) - placeholder pages per slug so the
+    // menu is complete and navigable; each mirrors one submenu entry from
+    // MenuComponent::navigation() in the CakePHP app. ──────────────────────
+
+    private static $registersPages = [
+        'index' => 'Registers',
+        'fd-register' => 'FD Register',
+        'shares-register' => 'Shares Register',
+        'lien-register' => 'Lien Register',
+        'nominee-register' => 'Nominee Register',
+        'form-i' => 'Form I',
+        'form-j' => 'Form J',
+    ];
+
+    private static $tdsPages = [
+        'dashboard' => 'TDS Dashboard',
+        'sections' => 'TDS Sections',
+        'deductees' => 'TDS Deductees',
+        'transactions' => 'TDS Transactions',
+        'report' => 'TDS Report',
+        'ledger' => 'TDS Ledger',
+        'challans' => 'Challan Management',
+        'certificates' => 'TDS Certificates',
+    ];
+
+    private static $gstPages = [
+        'dashboard' => 'GST Dashboard',
+        'master-setup' => 'GST Master',
+        'hsn-master' => 'HSN/SAC Master',
+        'outward-register' => 'Outward Register',
+        'input-register' => 'Input / Purchase Register',
+        'itc-summary' => 'ITC Summary',
+        'liability' => 'GST Liability',
+        'ledger' => 'GST Ledger',
+        'advance-receipts' => 'Advance Receipts',
+        'credit-debit-notes' => 'Credit/Debit Notes',
+        'payments' => 'GST Payment/Challan',
+        'reconciliation' => 'Reconciliation',
+        'return-reports' => 'Return Reports',
+        'year-end-report' => 'Year-End Report',
+    ];
+
+    public function registersPage($page = 'index')
+    {
+        return view('society.modules.placeholder', ['title' => self::$registersPages[$page] ?? 'Registers']);
+    }
+
+    public function tdsPage($page = 'dashboard')
+    {
+        return view('society.modules.placeholder', ['title' => self::$tdsPages[$page] ?? 'TDS']);
+    }
+
+    public function gstPage($page = 'dashboard')
+    {
+        return view('society.modules.placeholder', ['title' => self::$gstPages[$page] ?? 'GST']);
+    }
+
+    public function helpGuide()
+    {
+        return view('society.modules.placeholder', ['title' => 'Help & Guide']);
+    }
+
+    // ─── General Receipt (Non-Member Bank/Cash Receipt = SocietyOtherIncome) ──
+    // Port of SocietysController::general_receipt() / add_general_receipt() /
+    // delete_general_receipts() / bulk_paste_general_receipt() /
+    // save_bulk_paste_general_receipt() (CakePHP) plus the AJAX edit modal
+    // endpoints from SocietysAjaxController (get_general_receipt_details() /
+    // update_general_receipt()).
+
+    private function societyOtherIncomeHeadsList($societyId)
+    {
+        // "Received By" / "TDS Bank" dropdown - expense heads (account_category_id 4)
+        // excluded, same as SocietyBillComponent::societyOtherIncomeHeadsLists().
+        return SocietyLedgerHead::where('status', 1)
+            ->where('society_id', $societyId)
+            ->where('account_category_id', '!=', 4)
+            ->orderBy('title')
+            ->pluck('title', 'id');
+    }
+
+    private function nextGeneralReceiptNumber($societyId, $fyId)
+    {
+        $max = SocietyOtherIncome::where('society_id', $societyId)
+            ->where('financial_year_id', $fyId)
+            ->max('general_receipt_number');
+
+        return ($max !== null && $max >= 0) ? ((int) $max + 1) : 1;
+    }
+
     public function generalReceipt()
     {
-        return view('society.modules.placeholder', [
-            'title' => 'General Receipt',
+        $societyId = $this->societyId();
+        $fyId = $this->fyId();
+
+        $items = SocietyOtherIncome::where('society_id', $societyId)
+            ->where('status', 1)
+            ->where('financial_year_id', $fyId)
+            ->with('ledgerHead')
+            ->orderByDesc('payment_date')
+            ->get();
+
+        return view('society.modules.general-receipt', compact('items'));
+    }
+
+    public function addGeneralReceipt(Request $request, $id = null)
+    {
+        $societyId = $this->societyId();
+        $fyId = $this->fyId();
+
+        if ($request->isMethod('post')) {
+            $rows = $request->input('SocietyOtherIncome', []);
+            $header = $request->input('SocietyOtherIncomeHeader', []);
+            $generateOneVoucher = $request->input('generate_one_voucher');
+            $paymentMode = isset($header['payment_mode']) ? trim($header['payment_mode']) : '';
+            $societyBankId = $header['society_bank_id'] ?? '';
+
+            $toInsert = [];
+            $wrongDataEntryCount = 0;
+            $sharedVoucherNumber = null;
+
+            foreach ($rows as $row) {
+                if (empty($row['ledger_head_id'])) continue;
+
+                $paymentDate = $row['payment_date'] ?? '';
+                if (empty($paymentDate) || !$this->isDateInCurrentFinancialYear($paymentDate)) {
+                    $wrongDataEntryCount++;
+                    continue;
+                }
+
+                if (!empty($generateOneVoucher)) {
+                    if ($sharedVoucherNumber === null) {
+                        $sharedVoucherNumber = $this->nextGeneralReceiptNumber($societyId, $fyId);
+                    }
+                    $voucherNumber = $sharedVoucherNumber;
+                } else {
+                    $voucherNumber = $this->nextGeneralReceiptNumber($societyId, $fyId);
+                }
+
+                $data = [
+                    'general_receipt_number' => $voucherNumber,
+                    'society_id'             => $societyId,
+                    'amount_paid'            => !empty($row['amount_paid']) ? $row['amount_paid'] : 0,
+                    'tds_amount'             => !empty($row['tds_amount']) ? $row['tds_amount'] : 0,
+                    'net_amount'             => !empty($row['net_amount']) ? $row['net_amount'] : 0,
+                    'tds_bank_id'            => $row['tds_bank_id'] ?? '',
+                    'payment_mode'           => $paymentMode,
+                    'description'            => $row['description'] ?? '',
+                    'general_bank_name'      => $row['general_bank_name'] ?? '',
+                    'title'                  => $row['title'] ?? '',
+                    'ledger_head_id'         => $row['ledger_head_id'],
+                    'payment_date'           => $paymentDate,
+                    'entry_date'             => now(),
+                    'financial_year_id'      => $fyId,
+                    'status'                 => 1,
+                ];
+
+                if ($paymentMode == 'Bank') {
+                    $data['cheque_no'] = !empty($row['cheque_no']) ? $row['cheque_no'] : 0;
+                    $data['cheque_date'] = !empty($row['cheque_date']) ? $row['cheque_date'] : null;
+                    $data['society_bank_id'] = $societyBankId !== '' ? $societyBankId : 0;
+                } else {
+                    $data['cheque_no'] = 0;
+                    $data['cheque_date'] = null;
+                    // A cash receipt is still tied to a ledger - the "By" (Cash in Hand)
+                    // dropdown. Cash book / trial balance / balance sheet all match cash
+                    // receipts by this id, so keep the selected ledger (mirrors the CakePHP
+                    // fix that stopped forcing this to null for the Cash branch).
+                    $data['society_bank_id'] = $societyBankId !== '' ? $societyBankId : 0;
+                }
+
+                $toInsert[] = $data;
+            }
+
+            $message = $wrongDataEntryCount > 0 ? ' and Some Entries Not Saved Due to year Issue' : '';
+
+            if (!empty($toInsert)) {
+                DB::transaction(function () use ($toInsert) {
+                    foreach ($toInsert as $data) {
+                        SocietyOtherIncome::create($data);
+                    }
+                });
+                return redirect()->route('society.generalReceipt')->with('success', 'The general receipts has been added' . $message);
+            }
+
+            return redirect()->route('society.generalReceipt')->with('error', 'The general receipts could not be Saved.' . $message . ' Please, try again.');
+        }
+
+        $societyOtherIncomeHeadsLists = $this->societyOtherIncomeHeadsList($societyId);
+        $societyBankBalanceHeadsLists = $this->societyBankBalanceHeadsList($societyId);
+        $societyCashBalanceHeadsLists = $this->societyCashBalanceHeadsList($societyId);
+
+        $editItems = $id ? SocietyOtherIncome::where('id', $id)->where('society_id', $societyId)->get() : collect();
+
+        return view('society.modules.add-general-receipt', compact(
+            'societyOtherIncomeHeadsLists', 'societyBankBalanceHeadsLists', 'societyCashBalanceHeadsLists', 'editItems'
+        ));
+    }
+
+    public function deleteGeneralReceipt($id)
+    {
+        $societyId = $this->societyId();
+        $item = SocietyOtherIncome::where('id', $id)->where('society_id', $societyId)->first();
+
+        if ($item) {
+            $item->delete();
+            return redirect()->route('society.generalReceipt')->with('error', 'The payment has been deleted.');
+        }
+
+        return redirect()->route('society.generalReceipt')->with('error', 'The payment could not be deleted. Please, try again.');
+    }
+
+    public function getGeneralReceiptDetails(Request $request)
+    {
+        $societyId = $this->societyId();
+        $id = $request->input('general_receipt_id', 0);
+
+        $item = SocietyOtherIncome::where('id', $id)->where('society_id', $societyId)->first();
+
+        if (!$item) {
+            return response()->json(['error' => 1, 'error_message' => 'Requested general receipt is not found.', 'data' => []]);
+        }
+
+        $data = $item->toArray();
+        foreach (['payment_date', 'cheque_date'] as $field) {
+            if (empty($data[$field]) || $data[$field] == '0000-00-00') {
+                $data[$field] = '';
+            }
+        }
+
+        return response()->json(['error' => 0, 'error_message' => '', 'data' => $data]);
+    }
+
+    public function updateGeneralReceipt(Request $request)
+    {
+        $societyId = $this->societyId();
+        $requestData = $request->input('SocietyOtherIncome', []);
+        $id = $requestData['id'] ?? 0;
+
+        $item = SocietyOtherIncome::where('id', $id)->where('society_id', $societyId)->first();
+        if (!$item) {
+            return response()->json(['error' => 1, 'error_message' => 'Requested general receipt is not found.']);
+        }
+
+        if (empty($requestData['ledger_head_id'])) {
+            return response()->json(['error' => 1, 'error_message' => 'Please select the head in Received By.']);
+        }
+
+        $paymentDate = $requestData['payment_date'] ?? '';
+        if (empty($paymentDate) || !$this->isDateInCurrentFinancialYear($paymentDate)) {
+            return response()->json(['error' => 1, 'error_message' => 'Payment date should be within the current financial year.']);
+        }
+
+        $data = [
+            'ledger_head_id' => $requestData['ledger_head_id'],
+            'payment_mode'   => isset($requestData['payment_mode']) ? trim($requestData['payment_mode']) : '',
+            'amount_paid'    => ($requestData['amount_paid'] ?? '') !== '' ? $requestData['amount_paid'] : 0,
+            'tds_amount'     => ($requestData['tds_amount'] ?? '') !== '' ? $requestData['tds_amount'] : 0,
+            'net_amount'     => ($requestData['net_amount'] ?? '') !== '' ? $requestData['net_amount'] : 0,
+            'tds_bank_id'    => $requestData['tds_bank_id'] ?? '',
+            'title'          => $requestData['title'] ?? '',
+            'description'    => $requestData['description'] ?? '',
+            'payment_date'   => $paymentDate,
+        ];
+
+        if ($data['payment_mode'] == 'Bank') {
+            $data['society_bank_id']   = ($requestData['society_bank_id'] ?? '') !== '' ? $requestData['society_bank_id'] : 0;
+            $data['cheque_no']         = ($requestData['cheque_no'] ?? '') !== '' ? $requestData['cheque_no'] : 0;
+            $data['cheque_date']       = ($requestData['cheque_date'] ?? '') !== '' ? $requestData['cheque_date'] : null;
+            $data['general_bank_name'] = $requestData['general_bank_name'] ?? '';
+        } else {
+            $data['society_bank_id']   = 0;
+            $data['cheque_no']         = 0;
+            $data['cheque_date']       = null;
+            $data['general_bank_name'] = '';
+        }
+
+        $item->update($data);
+
+        return response()->json(['error' => 0, 'error_message' => 'The general receipt has been updated.']);
+    }
+
+    public function bulkPasteGeneralReceipt()
+    {
+        $societyId = $this->societyId();
+
+        $societyOtherIncomeHeadsLists = $this->societyOtherIncomeHeadsList($societyId);
+        $societyBankLists = $this->societyBankBalanceHeadsList($societyId);
+        $societyCashLists = $this->societyCashBalanceHeadsList($societyId);
+
+        return view('society.modules.bulk-paste-general-receipt', compact(
+            'societyOtherIncomeHeadsLists', 'societyBankLists', 'societyCashLists'
+        ));
+    }
+
+    public function saveBulkPasteGeneralReceipt(Request $request)
+    {
+        set_time_limit(0);
+        $societyId = $this->societyId();
+        $fyId = $this->fyId();
+
+        $postData = json_decode($request->getContent(), true);
+        if (empty($postData)) $postData = $request->all();
+
+        $rows = $postData['rows'] ?? [];
+        // Each row picks Bank or Cash independently (row['payment_type']) so one
+        // batch can mix both - unlike addGeneralReceipt()'s single-entry form,
+        // which only has one header payment_mode for the whole voucher.
+        $cashAccountId = $postData['cash_account_id'] ?? '';
+        $bankAccountId = $postData['bank_account_id'] ?? '';
+
+        if (empty($rows)) {
+            return response()->json(['success' => false, 'message' => 'No rows to save.']);
+        }
+
+        $societyParameter = SocietyParameter::where('society_id', $societyId)->first();
+        if (!$societyParameter) {
+            return response()->json(['success' => false, 'message' => 'Society parameters not configured. Cannot save receipts.']);
+        }
+
+        $ledgerHeadsByTitle = [];
+        foreach ($this->societyOtherIncomeHeadsList($societyId) as $lid => $ltitle) {
+            $ledgerHeadsByTitle[strtoupper(trim($ltitle))] = $lid;
+        }
+
+        // The master "Other Income" sub-group (society_id 0, shared across all
+        // societies) - matches account_category_id/account_head_id (3/9) hardcoded
+        // below, so an auto-created head maps under it exactly like a manually
+        // added one (see SocietyBillComponent-equivalent auto-create logic).
+        $otherIncomeSubCategory = SocietyHeadSubCategory::where('title', 'Other Income')
+            ->where('account_category_id', 3)
+            ->where('account_head_id', 9)
+            ->where('society_id', 0)
+            ->where('status', 1)
+            ->first();
+        $otherIncomeSubCategoryId = $otherIncomeSubCategory->id ?? 0;
+
+        $results = [];
+        $added = 0;
+        $failed = 0;
+
+        foreach ($rows as $idx => $row) {
+            $errors = [];
+
+            $ledgerTitle = trim($row['paid_to'] ?? '');
+            $particulars = trim($row['particulars'] ?? '');
+            $remark = trim($row['remark'] ?? '');
+            $paymentDateRaw = trim($row['payment_date'] ?? '');
+            $chequeDateRaw = trim($row['cheque_date'] ?? '');
+            $chequeNo = trim($row['cheque_number'] ?? '');
+            $bankNameText = trim($row['bank_name'] ?? '');
+            $tdsBankText = trim($row['tds_bank'] ?? '');
+            $amountRaw = trim(str_replace(',', '', $row['amount'] ?? ''));
+            $tdsAmountRaw = trim(str_replace(',', '', $row['tds_amount'] ?? ''));
+            $paymentTypeRaw = trim($row['payment_type'] ?? '');
+            $paymentMode = (strtoupper($paymentTypeRaw) === 'CASH') ? 'Cash' : 'Bank';
+            $societyBankId = ($paymentMode == 'Cash') ? $cashAccountId : $bankAccountId;
+
+            if (empty($ledgerTitle)) $errors[] = 'Paid To is required';
+            if ($amountRaw === '' || !is_numeric($amountRaw) || (float) $amountRaw <= 0) $errors[] = 'Valid amount required';
+            if (empty($societyBankId)) $errors[] = ($paymentMode == 'Cash' ? 'Cash' : 'Bank') . ' account not selected';
+
+            $paymentDate = $this->parseExcelDate($paymentDateRaw);
+            if (empty($paymentDate)) {
+                $errors[] = 'Invalid/missing Payment Date';
+            } elseif (!$this->isDateInCurrentFinancialYear($paymentDate)) {
+                $errors[] = 'Payment Date not in current financial year';
+            }
+
+            if (!empty($errors)) {
+                $results[] = ['row' => $idx, 'status' => 'error', 'errors' => $errors];
+                $failed++;
+                continue;
+            }
+
+            $ledgerKey = strtoupper($ledgerTitle);
+            if (isset($ledgerHeadsByTitle[$ledgerKey])) {
+                $ledgerHeadId = $ledgerHeadsByTitle[$ledgerKey];
+            } else {
+                $newLedger = SocietyLedgerHead::create([
+                    'title' => $ledgerTitle,
+                    'short_code' => strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $ledgerTitle), 0, 10)),
+                    'society_head_sub_category_id' => $otherIncomeSubCategoryId,
+                    'account_category_id' => 3,
+                    'account_head_id' => 9,
+                    'society_id' => $societyId,
+                    'financial_year_id' => $fyId,
+                    'opening_amount' => 0,
+                    'status' => 1,
+                ]);
+                if ($newLedger) {
+                    $ledgerHeadId = $newLedger->id;
+                    $ledgerHeadsByTitle[$ledgerKey] = $ledgerHeadId;
+                } else {
+                    $results[] = ['row' => $idx, 'status' => 'error', 'errors' => ['Could not create income head "' . $ledgerTitle . '"']];
+                    $failed++;
+                    continue;
+                }
+            }
+
+            $chequeDate = $this->parseExcelDate($chequeDateRaw);
+            $amount = (float) $amountRaw;
+            $tdsAmount = ($tdsAmountRaw !== '' && is_numeric($tdsAmountRaw)) ? (float) $tdsAmountRaw : 0.00;
+            $netAmount = $amount - $tdsAmount;
+
+            $billVoucherNumber = $this->nextGeneralReceiptNumber($societyId, $fyId);
+
+            $receipt = SocietyOtherIncome::create([
+                'general_receipt_number' => $billVoucherNumber,
+                'society_id'             => $societyId,
+                'amount_paid'            => $amount,
+                'tds_amount'             => $tdsAmount,
+                'net_amount'             => $netAmount,
+                // society_other_incomes.tds_bank_id is a free-text varchar(50), not a
+                // foreign key despite the name (matches addGeneralReceipt()'s convention).
+                'tds_bank_id'            => $tdsBankText,
+                'payment_mode'           => $paymentMode,
+                'cheque_no'              => !empty($chequeNo) ? $chequeNo : 0,
+                'cheque_date'            => !empty($chequeDate) ? $chequeDate : null,
+                'society_bank_id'        => $societyBankId,
+                'description'            => !empty($particulars) ? $particulars : $remark,
+                'general_bank_name'      => $bankNameText,
+                'title'                  => $ledgerTitle,
+                'ledger_head_id'         => $ledgerHeadId,
+                'payment_date'           => $paymentDate,
+                'entry_date'             => now(),
+                'financial_year_id'      => $fyId,
+                'status'                 => 1,
+            ]);
+
+            if ($receipt) {
+                $added++;
+                $results[] = ['row' => $idx, 'status' => 'success', 'voucher_no' => $billVoucherNumber];
+            } else {
+                $failed++;
+                $results[] = ['row' => $idx, 'status' => 'error', 'errors' => ['Database save failed']];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'added' => $added,
+            'failed' => $failed,
+            'total' => count($rows),
+            'results' => $results,
         ]);
     }
 
@@ -1053,29 +2331,71 @@ class SocietyModuleController extends Controller
             ->with('member')
             ->orderByDesc('id')
             ->get();
+        $paymentsLocked = $this->paymentsLocked();
 
-        return view('society.modules.member-payments', compact('items', 'fyId', 'paymentModes'));
+        return view('society.modules.member-payments', compact('items', 'fyId', 'paymentModes', 'paymentsLocked'));
     }
 
     public function addMemberPayment(Request $request, $id = null)
     {
+        if ($this->paymentsLocked()) {
+            return redirect()->route('society.memberPayments')->with('error', 'Member payments are locked while Current Bill Update is set to Yes in Society Parameters. Change that setting to edit or delete a payment.');
+        }
+
         $societyId = $this->societyId();
         $fyId = $this->fyId();
         $members = Member::where('society_id', $societyId)->where('status', 1)->orderBy('member_name')->get();
         $societyBanks = SocietyBank::where('society_id', $societyId)->get();
         $paymentModes = [1 => 'Cash', 3 => 'Cheque', 2 => 'NEFT', 4 => 'Other'];
         $editItem = $id ? MemberPayment::findOrFail($id) : null;
+        $banks = Bank::active()->orderBy('bank_name')->get();
 
         if ($request->isMethod('post')) {
+            $settlementService = app(BillSettlementService::class);
+
+            // Cheque Return: mirrors SocietysMembersController::memberChecqueReturn()
+            // (CakePHP) - filling in Cheque Return Date on an existing payment's edit
+            // form takes this branch instead of a normal save. The payment record
+            // itself is left untouched; only a cheque_return_details row is written
+            // (upsert by payment_id), and the member's bill summary is recalculated -
+            // BillSettlementService already excludes cheque-returned payments from the
+            // paid amount, which is what "reverts" the payment's effect on balances.
+            $chequeReturnDate = $request->input('cheque_return_date');
+            if ($editItem && !empty($chequeReturnDate)) {
+                $chequeReturnData = [
+                    'member_id' => $editItem->member_id,
+                    'payment_id' => $editItem->id,
+                    'society_id' => $societyId,
+                    'cheque_no' => $editItem->cheque_reference_number,
+                    'cheque_amount' => $editItem->amount_paid,
+                    'cheque_return_date' => $chequeReturnDate,
+                    'cheque_return_reason' => $request->input('cheque_return_reason', ''),
+                    'financial_year_id' => $fyId,
+                ];
+
+                $existingReturn = ChequeReturnDetail::where('payment_id', $editItem->id)->first();
+                if ($existingReturn) {
+                    $existingReturn->update($chequeReturnData);
+                } else {
+                    ChequeReturnDetail::create($chequeReturnData);
+                }
+
+                $settlementService->recalculateMemberBills(
+                    $editItem->member_id, $societyId, $editItem->bill_type ?: 'reg', $fyId, $editItem->member_transfer ?? 0
+                );
+
+                return redirect()->route('society.memberPayments')->with('success', 'Cheque Data reverted successfully.');
+            }
+
             $data = $request->only([
                 'member_id', 'payment_date', 'amount_paid', 'payment_mode',
                 'society_bank_id', 'cheque_reference_number', 'credited_date', 'narration',
+                'entry_date', 'bank_slip_no', 'member_bank_id', 'member_bank_ifsc', 'member_bank_branch',
             ]);
             $data['society_id'] = $societyId;
             $data['financial_year_id'] = $fyId;
             $data['bill_type'] = $request->input('bill_type', 'reg');
 
-            $settlementService = app(BillSettlementService::class);
             $memberTransfer = $settlementService->getLatestTransferNo($data['member_id'], $societyId);
             $data['member_transfer'] = $memberTransfer;
 
@@ -1102,11 +2422,15 @@ class SocietyModuleController extends Controller
             return redirect()->route('society.memberPayments')->with('success', $editItem ? 'Payment updated.' : 'Payment added.');
         }
 
-        return view('society.modules.add-member-payment', compact('members', 'societyBanks', 'paymentModes', 'editItem'));
+        return view('society.modules.add-member-payment', compact('members', 'societyBanks', 'paymentModes', 'editItem', 'banks'));
     }
 
     public function deleteMemberPayment($id)
     {
+        if ($this->paymentsLocked()) {
+            return redirect()->route('society.memberPayments')->with('error', 'Member payments are locked while Current Bill Update is set to Yes in Society Parameters. Change that setting to edit or delete a payment.');
+        }
+
         $societyId = $this->societyId();
         $fyId = $this->fyId();
         $payment = MemberPayment::where('id', $id)->where('society_id', $societyId)->first();
@@ -1125,6 +2449,104 @@ class SocietyModuleController extends Controller
         }
 
         return redirect()->route('society.memberPayments')->with('success', 'Payment deleted.');
+    }
+
+    // ─── Member Payment Voucher (view / print / PDF) ──────────────────
+
+    private static $numOnes = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+    private static $numTens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+    // Indian-scale (Lakh/Crore) number-to-words, same as the CakePHP app's
+    // UtilComponent::convertToWords() used for society_receipt_voucher.ctp.
+    private function convertAmountToWords($number)
+    {
+        $number = (int) $number;
+        $arab = intdiv($number, 1000000000);
+        $number -= $arab * 1000000000;
+        $crores = intdiv($number, 10000000);
+        $number -= $crores * 10000000;
+        $lakhs = intdiv($number, 100000);
+        $number -= $lakhs * 100000;
+        $thousands = intdiv($number, 1000);
+        $number -= $thousands * 1000;
+        $hundreds = intdiv($number, 100);
+        $number -= $hundreds * 100;
+        $tens = intdiv($number, 10);
+        $ones = $number % 10;
+
+        $res = '';
+        if ($arab) { $res .= $this->convertAmountToWords($arab) . ($arab > 10 ? ' Arabs ' : ' Arab '); }
+        if ($crores) { $res .= $this->convertAmountToWords($crores) . ($crores > 10 ? ' Crores ' : ' Crore '); }
+        if ($lakhs) { $res .= $this->convertAmountToWords($lakhs) . ($lakhs > 10 ? ' Lakhs' : ' Lakh'); }
+        if ($thousands) { $res .= (empty($res) ? '' : ' ') . $this->convertAmountToWords($thousands) . ' Thousand'; }
+        if ($hundreds) { $res .= (empty($res) ? '' : ' ') . $this->convertAmountToWords($hundreds) . ' Hundred'; }
+        if ($tens || $ones) {
+            if (!empty($res)) { $res .= ' and '; }
+            if ($tens < 2) {
+                $res .= self::$numOnes[$tens * 10 + $ones];
+            } else {
+                $res .= self::$numTens[$tens];
+                if ($ones) { $res .= ' ' . self::$numOnes[$ones]; }
+            }
+        }
+        return empty($res) ? 'Zero' : $res;
+    }
+
+    private function getAmountInRupeesWords($amount)
+    {
+        $split = explode('.', number_format((float) $amount, 2, '.', ''));
+        $words = 'Rupees ' . $this->convertAmountToWords((int) $split[0]);
+        if ((int) $split[1] > 0) {
+            $words .= ' and ' . $this->convertAmountToWords((int) $split[1]) . ' Paise';
+        }
+        return $words . ' Only';
+    }
+
+    private function buildMemberPaymentVoucherData($id)
+    {
+        $societyId = $this->societyId();
+        $payment = MemberPayment::with('member')->where('society_id', $societyId)->findOrFail($id);
+        $society = $this->getSociety();
+        $societyParameter = SocietyParameter::where('society_id', $societyId)->first();
+
+        $bankName = '';
+        if (!empty($payment->member_bank_id)) {
+            $bank = Bank::find($payment->member_bank_id);
+            $bankName = $bank->bank_name ?? '';
+        }
+
+        $billInfo = null;
+        if ($societyParameter && $societyParameter->show_bills_in_receipt == 1) {
+            $settlement = MemberBillSettlement::with('billSummary')->where('payment_id', $payment->id)->first();
+            if ($settlement) {
+                $billInfo = [
+                    'bill_no' => $settlement->bill_no,
+                    'bill_date' => $settlement->billSummary->bill_generated_date ?? null,
+                ];
+            }
+        }
+
+        $amountWords = $this->getAmountInRupeesWords($payment->amount_paid);
+
+        return compact('payment', 'society', 'bankName', 'billInfo', 'amountWords');
+    }
+
+    public function memberPaymentVoucher($id)
+    {
+        $data = $this->buildMemberPaymentVoucherData($id);
+        $data['isPdf'] = false;
+        return view('society.modules.member-payment-voucher', $data);
+    }
+
+    public function memberPaymentVoucherPdf($id)
+    {
+        $data = $this->buildMemberPaymentVoucherData($id);
+        $data['isPdf'] = true;
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('society.modules.member-payment-voucher', $data)
+            ->setPaper('a5');
+
+        return $pdf->stream('Receipt-' . $data['payment']->receipt_id . '.pdf');
     }
 
     public function memberReceipt()
@@ -1257,6 +2679,49 @@ class SocietyModuleController extends Controller
         return view('society.modules.import-member-payments', compact('bankList'));
     }
 
+    public function downloadSampleMemberPaymentTemplate()
+    {
+        $societyId = $this->societyId();
+        $members = Member::where('society_id', $societyId)
+            ->orderBy('flat_no')
+            ->get();
+
+        $spreadsheet = new Spreadsheet();
+        $spreadsheet->getDefaultStyle()->getFont()->setName('Arial')->setSize(9);
+        $spreadsheet->getDefaultStyle()->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
+        $spreadsheet->getDefaultStyle()->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT)->setVertical(Alignment::VERTICAL_CENTER);
+
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Member Payment');
+        $sheet->freezePane('A2');
+        $sheet->getSheetView()->setZoomScale(100);
+
+        $headers = ['UnitNo', 'Amount', 'ReceiptDate', 'RctNo', 'MemberName', 'ChqNo', 'ChqDate', 'BankName', 'BranchName', 'ClearDate', 'Remarks'];
+        $colLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'];
+
+        foreach ($headers as $i => $header) {
+            $sheet->setCellValue($colLetters[$i] . '1', $header);
+            $sheet->getStyle($colLetters[$i] . '1')->getFont()->setBold(true)->setSize(11);
+            $sheet->getColumnDimension($colLetters[$i])->setAutoSize(true);
+        }
+
+        $rowNum = 2;
+        foreach ($members as $m) {
+            $sheet->setCellValue('A' . $rowNum, $m->flat_no);
+            $sheet->setCellValue('E' . $rowNum, $m->member_name);
+            $rowNum++;
+        }
+
+        $filename = 'SampleMemberPayment.xlsx';
+        $writer = new Xlsx($spreadsheet);
+
+        return response()->streamDownload(function () use ($writer) {
+            $writer->save('php://output');
+        }, $filename, [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ]);
+    }
+
     public function importSocietyPayments()
     {
         $societyId = $this->societyId();
@@ -1271,26 +2736,127 @@ class SocietyModuleController extends Controller
         return view('society.modules.import-society-payments', compact('bankList'));
     }
 
+    private const MONTH_NAMES = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'June',7=>'July',8=>'August',9=>'September',10=>'October',11=>'November',12=>'December'];
+
+    // Ported from Cake SocietyBillsController::society_generated_bills(). Cake reads
+    // the vw_member_transaction_data DB view; that view's DEFINER account doesn't
+    // exist on every MySQL instance (error 1449), so this queries the same two
+    // tables the view's SELECT actually draws from (members + member_bill_summaries
+    // - the view's other joins are LEFT JOINs whose columns it never selects) rather
+    // than the view itself. Same result set, no DEFINER dependency. The view is also
+    // missing interest_paid/interest_on_due_amount, so those cells are blank here
+    // too, matching Cake's own display exactly.
     public function allGeneratedBills(Request $request)
     {
         $societyId = $this->societyId();
         $fyId = $this->fyId();
 
-        $query = MemberBillSummary::where('society_id', $societyId)
-            ->where('financial_year_id', $fyId)
-            ->with('member');
-
         $fromDate = $request->input('from_date', '');
         $toDate = $request->input('to_date', '');
 
-        if ($request->isMethod('post')) {
-            if ($fromDate) $query->where('bill_generated_date', '>=', $fromDate);
-            if ($toDate) $query->where('bill_generated_date', '<=', $toDate);
+        $rows = collect();
+
+        if ($request->isMethod('post') && $fromDate !== '' && $toDate !== '') {
+            session(['date.from_date' => $fromDate, 'date.to_date' => $toDate]);
+
+            $rows = DB::table('member_bill_summaries as mbs')
+                ->join('members as mem', 'mem.id', '=', 'mbs.member_id')
+                ->where('mbs.society_id', $societyId)
+                ->where('mbs.financial_year_id', $fyId)
+                ->whereBetween('mbs.bill_generated_date', [$fromDate, $toDate])
+                ->orderBy('mbs.bill_generated_date')
+                ->select('mem.member_prefix', 'mem.member_name', 'mem.flat_no', 'mem.member_email', 'mem.member_phone',
+                    'mbs.society_id', 'mem.building_id', 'mem.floor_no', 'mem.unit_type', 'mbs.financial_year_id',
+                    'mbs.id', 'mbs.bill_no', 'mbs.bill_type', 'mbs.month', 'mbs.member_transfer', 'mbs.interest_free_amount',
+                    'mbs.op_principal_arrears_original', 'mbs.jv_adjustment', 'mbs.op_principal_arrears', 'mbs.op_interest_arrears',
+                    'mbs.op_due_amount', 'mbs.bill_generated_date', 'mbs.monthly_amount', 'mbs.monthly_bill_amount',
+                    'mbs.amount_payable', 'mbs.op_tax_arrears', 'mbs.principal_balance', 'mbs.tax_total', 'mbs.tax_balance',
+                    'mbs.interest_balance', 'mbs.principal_paid', 'mbs.tax_paid', 'mbs.interest_adjusted', 'mbs.balance_amount',
+                    'mbs.monthly_principal_amount')
+                ->get()
+                ->unique('id')
+                ->values();
         }
 
-        $items = $query->orderByDesc('bill_generated_date')->get();
+        return view('society.modules.generated-bills', [
+            'rows' => $rows,
+            'fyId' => $fyId,
+            'fromDate' => $fromDate,
+            'toDate' => $toDate,
+            'monthNames' => self::MONTH_NAMES,
+        ]);
+    }
 
-        return view('society.modules.generated-bills', compact('items', 'fyId', 'fromDate', 'toDate'));
+    // Ported from Cake SocietyBillsController::delete_all_bills_payments(), with a
+    // 'delete_type' dropdown added on top of Cake's single always-delete-everything
+    // button:
+    //   'both'    - Cake's original behavior: bill_generates + bill_summaries +
+    //               payments + journal_vouchers in range, plus the FY's
+    //               MemberIdentification wipe (Cake's own comment says that wipe
+    //               ignores the date range - kept exactly, tied to 'both' and
+    //               'bill' since identifications describe the billing/transfer
+    //               cycle, not receipts).
+    //   'bill'    - only bill_generates + bill_summaries (+ identifications) in
+    //               range; payments and journal vouchers are left untouched.
+    //   'receipt' - only payments in range; bills, journal vouchers and
+    //               identifications are left untouched.
+    public function deleteAllBillsAndPayments(Request $request)
+    {
+        $societyId = $this->societyId();
+        $fyId = $this->fyId();
+
+        $fromDate = $request->input('from_date', '');
+        $toDate = $request->input('to_date', '');
+        if ($fromDate === '') $fromDate = (string) session('date.from_date', '');
+        if ($toDate === '') $toDate = (string) session('date.to_date', '');
+
+        if ($fromDate === '' || $toDate === '') {
+            return redirect()->route('society.allGeneratedBills')->with('error', 'Select a From and To date before deleting bills.');
+        }
+
+        $deleteType = $request->input('delete_type', 'both');
+        if (!in_array($deleteType, ['both', 'bill', 'receipt'], true)) {
+            $deleteType = 'both';
+        }
+
+        $matchedBillCount = MemberBillSummary::where('society_id', $societyId)
+            ->where('financial_year_id', $fyId)
+            ->where('bill_generated_date', '>=', $fromDate)
+            ->where('bill_generated_date', '<=', $toDate)
+            ->count();
+        $matchedReceiptCount = MemberPayment::where('society_id', $societyId)
+            ->where('financial_year_id', $fyId)
+            ->whereBetween('payment_date', [$fromDate, $toDate])
+            ->count();
+
+        if ($deleteType === 'both' || $deleteType === 'bill') {
+            MemberIdentification::where('society_id', $societyId)->where('financial_year_id', $fyId)->delete();
+
+            MemberBillGenerate::where('society_id', $societyId)->where('financial_year_id', $fyId)
+                ->whereBetween('bill_generated_date', [$fromDate, $toDate])->delete();
+
+            MemberBillSummary::where('society_id', $societyId)->where('financial_year_id', $fyId)
+                ->whereBetween('bill_generated_date', [$fromDate, $toDate])->delete();
+        }
+
+        if ($deleteType === 'both' || $deleteType === 'receipt') {
+            MemberPayment::where('society_id', $societyId)->where('financial_year_id', $fyId)
+                ->whereBetween('payment_date', [$fromDate, $toDate])->delete();
+        }
+
+        if ($deleteType === 'both') {
+            JournalVoucher::where('society_id', $societyId)->where('financial_year_id', $fyId)
+                ->whereBetween('voucher_date', [$fromDate, $toDate])->delete();
+        }
+
+        $deletedCount = $deleteType === 'receipt' ? $matchedReceiptCount : $matchedBillCount;
+        $label = $deleteType === 'receipt' ? 'receipt(s)' : ($deleteType === 'bill' ? 'bill(s)' : 'bill(s) and receipt(s)');
+
+        if ($deletedCount > 0) {
+            return redirect()->route('society.allGeneratedBills')->with('success', "Deleted {$deletedCount} {$label} from {$fromDate} to {$toDate}.");
+        }
+
+        return redirect()->route('society.allGeneratedBills')->with('error', "No {$label} found between {$fromDate} and {$toDate} for the current financial year - nothing was deleted.");
     }
 
     public function createMemberLogins(Request $request)
@@ -1333,67 +2899,163 @@ class SocietyModuleController extends Controller
 
     public function updateOpeningBalance(Request $request)
     {
-        $societyId = $this->societyId();
-        $members = Member::where('society_id', $societyId)
-            ->where('status', 1)
-            ->with(['building', 'wing'])
-            ->orderBy('id')
-            ->get();
-
-        if ($request->isMethod('post') && $request->hasFile('member_csv')) {
-            $file = $request->file('member_csv');
-            $handle = fopen($file->getRealPath(), 'r');
-            $header = fgetcsv($handle);
-            $updated = 0;
-
-            while (($row = fgetcsv($handle)) !== false) {
-                if (count($row) < 6) continue;
-                $memberId = $row[0];
-                $member = Member::where('id', $memberId)->where('society_id', $societyId)->first();
-                if ($member) {
-                    $member->update([
-                        'op_principal' => $row[3] ?: 0,
-                        'op_interest' => $row[4] ?: 0,
-                        'op_tax' => $row[5] ?: 0,
-                    ]);
-                    $updated++;
-                }
-            }
-            fclose($handle);
-            return redirect()->route('society.updateOpeningBalance')->with('success', "{$updated} members opening balance updated.");
-        }
-
-        return view('society.modules.update-opening-balance', compact('members'));
+        return view('society.modules.update-opening-balance');
     }
 
+    private const OPENING_BALANCE_CSV_HEADER = [
+        'Sr.No.', 'Member ID', 'Member Name', 'Flat No', 'Society ID',
+        'Year ID', 'Year', 'Principal Balance', 'Interest Balance', 'Tax Balance',
+    ];
+
+    // Ported from Cake SocietysController::download_member_details - CSV of the
+    // current financial year's member_year_wise_closing_balance rows.
     public function downloadMemberDetails()
     {
         $societyId = $this->societyId();
-        $members = Member::where('society_id', $societyId)
-            ->where('status', 1)
-            ->orderBy('id')
+        $fyId = $this->fyId();
+
+        $rows = DB::table('members as m')
+            ->join('member_year_wise_closing_balance as cb', function ($j) {
+                $j->on('m.id', '=', 'cb.member_id')->on('m.society_id', '=', 'cb.society_id');
+            })
+            ->leftJoin('financial_year_master as fy', 'cb.year_id', '=', 'fy.id')
+            ->where('m.society_id', $societyId)
+            ->where('cb.year_id', $fyId)
+            ->selectRaw('cb.id AS cd_id, m.id AS m_id, m.member_name, m.flat_no, m.society_id, cb.year_id, fy.year, '
+                . 'CAST(cb.principal_balance AS CHAR) AS principal_balance, '
+                . 'CAST(cb.interest_balance AS CHAR) AS interest_balance, '
+                . 'CAST(cb.tax_balance AS CHAR) AS tax_balance')
             ->get();
 
-        $filename = 'MemberDetails_' . date('Y-m-d') . '.csv';
-        $headers = ['Content-Type' => 'text/csv', 'Content-Disposition' => "attachment; filename=\"{$filename}\""];
+        $filename = 'Member_details_' . date('Ymd_His') . '.csv';
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => "attachment; filename={$filename}",
+            'Pragma' => 'no-cache',
+            'Expires' => '0',
+        ];
 
-        $callback = function () use ($members) {
+        $callback = function () use ($rows) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['Member ID', 'Member Name', 'Flat No', 'Principal Balance', 'Interest Balance', 'Tax Balance']);
-            foreach ($members as $m) {
+            if ($rows->isNotEmpty()) {
+                fputcsv($out, self::OPENING_BALANCE_CSV_HEADER);
+            }
+            foreach ($rows as $r) {
                 fputcsv($out, [
-                    $m->id,
-                    trim($m->member_prefix . ' ' . $m->member_name),
-                    $m->flat_no,
-                    $m->op_principal ?? 0,
-                    $m->op_interest ?? 0,
-                    $m->op_tax ?? 0,
+                    $r->cd_id ?? '',
+                    $r->m_id,
+                    $r->member_name,
+                    $r->flat_no,
+                    $r->society_id,
+                    $r->year !== null ? $r->year_id : '',
+                    $r->year ?? '',
+                    $r->principal_balance ?? 0,
+                    $r->interest_balance ?? 0,
+                    $r->tax_balance ?? 0,
                 ]);
             }
             fclose($out);
         };
 
         return response()->stream($callback, 200, $headers);
+    }
+
+    // Ported from Cake SocietysController::upload_member_details. Updates
+    // member_year_wise_closing_balance by Sr.No. and the latest
+    // member_bill_summaries row of that member/year. Unlike Cake, rows are
+    // limited to the logged-in society.
+    public function uploadMemberDetails(Request $request)
+    {
+        $request->validate(['member_csv' => 'required|file']);
+
+        $file = $request->file('member_csv');
+        if (strtolower($file->getClientOriginalExtension()) !== 'csv') {
+            return redirect()->route('society.updateOpeningBalance')->with('error', 'Only CSV files are allowed.');
+        }
+
+        $handle = fopen($file->getRealPath(), 'r');
+        $header = fgetcsv($handle);
+        $header = array_map(fn ($h) => trim(preg_replace('/^\xEF\xBB\xBF/', '', (string) $h)), $header ?: []);
+
+        $missing = array_diff(self::OPENING_BALANCE_CSV_HEADER, $header);
+        if ($missing) {
+            fclose($handle);
+            return redirect()->route('society.updateOpeningBalance')
+                ->with('error', 'Invalid CSV format. Missing columns: ' . implode(', ', $missing));
+        }
+
+        $societyId = $this->societyId();
+        $updated = $skipped = $billUpdated = $billSkipped = 0;
+        $errors = [];
+        $line = 1;
+
+        while (($raw = fgetcsv($handle)) !== false) {
+            $line++;
+            if (!array_filter($raw, fn ($v) => $v !== null && $v !== '')) {
+                continue;
+            }
+            $raw = array_pad($raw, count($header), '');
+            $row = array_combine($header, array_slice($raw, 0, count($header)));
+
+            if (empty($row['Sr.No.']) || !is_numeric($row['Sr.No.'])) {
+                $skipped++;
+                $errors[] = "Row {$line}: Invalid Sr.No.";
+                continue;
+            }
+
+            $id = (int) $row['Sr.No.'];
+            $principal = (float) ($row['Principal Balance'] ?? 0);
+            $interest = (float) ($row['Interest Balance'] ?? 0);
+            $tax = (float) ($row['Tax Balance'] ?? 0);
+
+            $closing = DB::table('member_year_wise_closing_balance')
+                ->where('id', $id)->where('society_id', $societyId);
+            if (!$closing->exists()) {
+                $skipped++;
+                $errors[] = "Row {$line}: Record not found (ID: {$id})";
+                continue;
+            }
+
+            $closing->update([
+                'principal_balance' => $principal,
+                'interest_balance' => $interest,
+                'tax_balance' => $tax,
+            ]);
+            $updated++;
+
+            $memberId = (int) ($row['Member ID'] ?? 0);
+            $yearId = (int) ($row['Year ID'] ?? 0);
+            if (!$memberId || !$yearId) {
+                $billSkipped++;
+                continue;
+            }
+
+            $billId = DB::table('member_bill_summaries')
+                ->where('society_id', $societyId)
+                ->where('member_id', $memberId)
+                ->where('financial_year_id', $yearId)
+                ->orderByDesc('id')->orderByDesc('udate')
+                ->value('id');
+
+            if ($billId) {
+                DB::table('member_bill_summaries')->where('id', $billId)->update([
+                    'principal_balance' => $principal,
+                    'interest_balance' => $interest,
+                    'tax_balance' => $tax,
+                    'balance_amount' => $principal + $interest + $tax,
+                ]);
+                $billUpdated++;
+            } else {
+                $billSkipped++;
+            }
+        }
+        fclose($handle);
+
+        return redirect()->route('society.updateOpeningBalance')->with('ob_result', [
+            'closing' => "Updated: {$updated}, Skipped: {$skipped}",
+            'bill' => "Updated: {$billUpdated}, Skipped: {$billSkipped}",
+            'errors' => $errors,
+        ]);
     }
 
     // ─── Employee Section ──────────────────────────────────────────
@@ -1542,11 +3204,50 @@ class SocietyModuleController extends Controller
 
     // ─── Reports Section ───────────────────────────────────────────
 
+    /**
+     * Report - Accounts (CakePHP: account_reports/account). A page of report buttons; the list
+     * lives in config/account_reports.php. This route is Society-only, and a Society login sees
+     * every button (the CakePHP Member restriction is recorded in the config for the day a
+     * Member version of this page is built).
+     */
     public function reportAccounts()
     {
-        return view('society.modules.placeholder', [
+        return view('society.modules.report-accounts', [
             'title' => 'Report - Accounts',
+            'reports' => $this->accountReportButtons(),
         ]);
+    }
+
+    /**
+     * One report of the Accounts page. The reports themselves are not migrated yet, so this
+     * shows the same "under development" page the other unmigrated modules show.
+     */
+    public function reportAccountsItem(string $report)
+    {
+        $found = collect(config('account_reports'))->firstWhere('slug', $report);
+        if (!$found) {
+            abort(404);
+        }
+
+        return view('society.modules.placeholder', [
+            'title' => $found['label'],
+        ]);
+    }
+
+    private function accountReportButtons(): array
+    {
+        $buttons = [];
+        foreach (config('account_reports') as $report) {
+            if (!empty($report['action'])) {
+                $report['route'] = 'society.reports.' . $report['action'];
+            }
+            $report['url'] = $report['route'] && \Illuminate\Support\Facades\Route::has($report['route'])
+                ? route($report['route'])
+                : route('society.reportAccountsItem', $report['slug']);
+            $buttons[] = $report;
+        }
+
+        return $buttons;
     }
 
     public function reportSociety()
@@ -1556,16 +3257,321 @@ class SocietyModuleController extends Controller
         ]);
     }
 
-    public function journalVoucher()
+    // ─── Journal Voucher ───────────────────────────────────────────
+    // Port of ReportsController::journal_vouchers() / delete_journal_voucher()
+    // (CakePHP). Two account "sides" per row: a Society Member (jv_*_member_head_id)
+    // or a Ledger Head (jv_*_ledger_head_id) - the add-form combines both into one
+    // dropdown ("member-123", "member-123-old" for a transferred-out member, or
+    // "ledger-45"); the edit-form instead posts two separate selects.
+
+    private function jvMemberList($societyId)
+    {
+        return Member::where('status', 1)->where('society_id', $societyId)->orderBy('id')->pluck('member_name', 'id');
+    }
+
+    private function jvMemberFlatNoList($societyId)
+    {
+        return Member::where('status', 1)->where('society_id', $societyId)->orderBy('id')->pluck('flat_no', 'id');
+    }
+
+    private function jvOldMemberList($societyId)
+    {
+        // Port of SocietyBillComponent::getSocietyOldMeberFlatList() - the most
+        // recent member_identifications row (by id) for every member who has a
+        // transfer history (member_transfer > 0), i.e. the previous owner's name.
+        return DB::select('
+            select third_member, member_id, flat_no from member_identifications where id in (
+                select max(id) from member_identifications where member_id in (
+                    select id from members where member_transfer > 0 and society_id = ? and status = 1
+                ) group by member_id
+            )
+        ', [$societyId]);
+    }
+
+    private function jvLedgerHeadList($societyId)
+    {
+        // society_head_sub_category_id 20/21 (Bank/Cash Balances) excluded, same as
+        // the CakePHP view's $ledgerHeadForJournalVouchers.
+        return SocietyLedgerHead::where('status', 1)
+            ->where('society_id', $societyId)
+            ->whereNotIn('society_head_sub_category_id', [20, 21])
+            ->orderBy('title')
+            ->pluck('title', 'id');
+    }
+
+    private function nextJournalVoucherNumber($societyId, $fyId)
+    {
+        $max = JournalVoucher::where('society_id', $societyId)->where('financial_year_id', $fyId)->max('voucher_no');
+        return ($max !== null && $max >= 0) ? ((int) $max + 1) : 1;
+    }
+
+    private function jvApplyArrearsAdjustment($societyId, $fyId, $jvBlock, $paymentType)
+    {
+        if (empty($jvBlock['type'])) return;
+
+        foreach ($jvBlock['type'] as $count => $jvType) {
+            $rawId = $jvBlock['jv_member_ledger_head_id'][$count] ?? '';
+            $exploded = explode('-', $rawId);
+            if (($exploded[0] ?? '') !== 'member') continue;
+            $memberId = $exploded[1] ?? null;
+            if (empty($memberId)) continue;
+
+            $summary = MemberBillSummary::where('member_id', $memberId)
+                ->where('society_id', $societyId)
+                ->where('financial_year_id', $fyId)
+                ->orderByDesc('bill_no')
+                ->first();
+            if (!$summary) continue;
+
+            $principal = (float) $summary->principal_balance;
+            $interest = (float) $summary->interest_balance;
+            $tax = (float) $summary->tax_balance;
+
+            if ($jvType === 'Debit') {
+                $amount = (float) ($jvBlock['jv_amount_debit'][$count] ?? 0);
+                if ($paymentType === 'Principal Arrears') $principal += $amount;
+                elseif ($paymentType === 'Interest Arrears') $interest += $amount;
+                elseif ($paymentType === 'Tax Arrears') $tax += $amount;
+            } elseif ($jvType === 'Credit') {
+                $amount = (float) ($jvBlock['jv_amount_credit'][$count] ?? 0);
+                if ($paymentType === 'Principal Arrears') $principal -= $amount;
+                elseif ($paymentType === 'Interest Arrears') $interest -= $amount;
+                elseif ($paymentType === 'Tax Arrears') $tax -= $amount;
+            } else {
+                continue;
+            }
+
+            $summary->update([
+                'principal_balance' => $principal,
+                'interest_balance' => $interest,
+                'tax_balance' => $tax,
+                'balance_amount' => $principal + $interest + $tax,
+            ]);
+        }
+    }
+
+    public function journalVoucher(Request $request, $voucherNo = null)
     {
         $societyId = $this->societyId();
         $fyId = $this->fyId();
-        $items = JournalVoucher::where('society_id', $societyId)
-            ->where('financial_year_id', $fyId)
-            ->orderByDesc('voucher_date')
+
+        if ($request->isMethod('post')) {
+            $postData = $request->all();
+            $jvBlock = $postData['JournalVoucher'] ?? [];
+            $paymentType = $postData['payment']['type'][0] ?? '';
+
+            // Only ever populated for an add-mode submission - an edit-mode submission
+            // posts per-row keyed fields instead, so this is a no-op there (matches the
+            // CakePHP original, where foreach() over the missing 'type' key is also a no-op).
+            $this->jvApplyArrearsAdjustment($societyId, $fyId, $jvBlock, $paymentType);
+
+            $voucherDate = $jvBlock['voucher_date'] ?? '';
+            $note = $jvBlock['note'] ?? '';
+            $success = [];
+
+            if (!empty($jvBlock['voucher_no'])) {
+                // Edit of an existing voucher: top-level numeric keys of $postData are
+                // journal_vouchers.id values (see the edit-mode table in the view).
+                foreach ($postData as $rowId => $rowValue) {
+                    if (!is_numeric($rowId)) continue;
+
+                    $rowJv = $rowValue['JournalVoucher'] ?? [];
+                    $jvType = $rowJv['jv_type'] ?? '';
+                    $jvMemberId = !empty($rowJv['jv_member_head_id']) ? $rowJv['jv_member_head_id'] : 0;
+                    $jvLedgerId = !empty($rowJv['jv_ledger_head_id']) ? $rowJv['jv_ledger_head_id'] : 0;
+
+                    $isOldMember = false;
+                    if (strpos((string) $jvMemberId, '-') !== false) {
+                        $isOldMember = true;
+                        $explodedMemberId = explode('-', $jvMemberId);
+                        // Ported CakePHP bug, kept intentionally: this should be index [1]
+                        // (the numeric member id) but instead keeps index [0] (the literal
+                        // string "member"), so editing a row onto an Old Member looks up
+                        // Member.id = 'member' (no match) and saves a bogus member_transfer.
+                        $jvMemberId = $explodedMemberId[0];
+                    }
+
+                    $data = [
+                        'voucher_no' => $jvBlock['voucher_no'],
+                        'note' => $note,
+                    ];
+
+                    if ($jvType == 'Credit') {
+                        $data['jv_credit_ledger_head_id'] = $jvLedgerId;
+                        $data['jv_credit_member_head_id'] = $jvMemberId;
+                        $data['jv_creadit_type'] = 'Credit';
+                        $data['jv_type'] = 'Credit';
+                        $data['jv_amount_credited'] = $rowJv['jv_amount_credited'] ?? '';
+                        $data['jv_debit_ledger_head_id'] = 0;
+                        $data['jv_debit_member_head_id'] = 0;
+                        $data['jv_amount_debited'] = 0;
+                        $data['jv_debit_type'] = '';
+                    } else {
+                        $data['jv_debit_ledger_head_id'] = $jvLedgerId;
+                        $data['jv_debit_member_head_id'] = $jvMemberId;
+                        $data['jv_debit_type'] = 'Debit';
+                        $data['jv_type'] = 'Debit';
+                        $data['jv_amount_debited'] = $rowJv['jv_amount_debited'] ?? '';
+                        $data['jv_credit_ledger_head_id'] = 0;
+                        $data['jv_credit_member_head_id'] = 0;
+                        $data['jv_amount_credited'] = 0;
+                        $data['jv_creadit_type'] = '';
+                    }
+
+                    $memberTransfer = Member::where('id', $jvMemberId)->value('member_transfer');
+                    if ($isOldMember) $memberTransfer = ($memberTransfer ?? 0) - 1;
+                    $data['member_transfer'] = $memberTransfer;
+
+                    if ($this->isDateInCurrentFinancialYear($voucherDate)) {
+                        // Scoped to this society - not in the CakePHP original, added so an
+                        // edit can never touch another society's voucher row by id.
+                        // a crafted post carrying a Debit/Credit Note row id must not update that note
+                        $updated = JournalNotes::jvOnly(JournalVoucher::where('id', $rowId)->where('society_id', $societyId))->update($data);
+                        $success[] = $updated ? 1 : 0;
+                    } else {
+                        $success[] = 0;
+                    }
+                }
+            } else {
+                // Addition of a new voucher: parallel arrays, one entry per Dr/Cr row,
+                // all sharing one freshly generated voucher_no.
+                $newVoucherNo = $this->nextJournalVoucherNumber($societyId, $fyId);
+
+                foreach (($jvBlock['type'] ?? []) as $key => $jvType) {
+                    $rawId = $jvBlock['jv_member_ledger_head_id'][$key] ?? '';
+                    $isOldMember = false;
+
+                    if (strpos($rawId, 'member-') !== false) {
+                        $memberId = str_replace('member-', '', $rawId);
+                        $ledgerId = 0;
+                        if (strpos($memberId, 'old') !== false) {
+                            $isOldMember = true;
+                            $explodedMemberId = explode('-', $memberId);
+                            $memberId = $explodedMemberId[0];
+                        }
+                    } else {
+                        $ledgerId = str_replace('ledger-', '', $rawId);
+                        $memberId = 0;
+                    }
+
+                    $data = [
+                        'society_id' => $societyId,
+                        'voucher_no' => $newVoucherNo,
+                        'voucher_date' => $voucherDate,
+                        'note' => $note,
+                        'financial_year_id' => $fyId,
+                    ];
+
+                    if ($jvType == 'Debit') {
+                        $data['jv_debit_ledger_head_id'] = $ledgerId;
+                        $data['jv_debit_member_head_id'] = $memberId;
+                        $data['jv_credit_ledger_head_id'] = 0;
+                        $data['jv_credit_member_head_id'] = 0;
+                        $data['jv_amount_debited'] = !empty($jvBlock['jv_amount_debit'][$key]) ? $jvBlock['jv_amount_debit'][$key] : 0;
+                        $data['jv_amount_credited'] = 0;
+                        $data['jv_type'] = 'Debit';
+                        $data['jv_debit_type'] = 'Debit';
+                    } elseif ($jvType == 'Credit') {
+                        $data['jv_credit_ledger_head_id'] = $ledgerId;
+                        $data['jv_credit_member_head_id'] = $memberId;
+                        $data['jv_debit_ledger_head_id'] = 0;
+                        $data['jv_debit_member_head_id'] = 0;
+                        $data['jv_amount_credited'] = !empty($jvBlock['jv_amount_credit'][$key]) ? $jvBlock['jv_amount_credit'][$key] : 0;
+                        $data['jv_amount_debited'] = 0;
+                        $data['jv_type'] = 'Credit';
+                        $data['jv_creadit_type'] = 'Credit';
+                    } else {
+                        continue;
+                    }
+
+                    $memberTransfer = Member::where('id', $memberId)->value('member_transfer');
+                    if ($isOldMember) $memberTransfer = ($memberTransfer ?? 0) - 1;
+                    $data['member_transfer'] = $memberTransfer;
+
+                    if ($this->isDateInCurrentFinancialYear($voucherDate)) {
+                        $success[] = JournalVoucher::create($data) ? 1 : 0;
+                    } else {
+                        $success[] = 0;
+                    }
+                }
+            }
+
+            if (!empty($success) && !in_array(0, $success, true)) {
+                return redirect()->route('society.journalVoucher')->with('success', 'The journal vouchers has been saved.');
+            }
+            return redirect()->route('society.journalVoucher')->with('error', 'The journal vouchers could not be saved. Please, try again.');
+        }
+
+        $memberList = $this->jvMemberList($societyId);
+        $oldMemberList = $this->jvOldMemberList($societyId);
+        $flatNoList = $this->jvMemberFlatNoList($societyId);
+        $ledgerHeadList = $this->jvLedgerHeadList($societyId);
+
+        $oldMemberNameById = [];
+        foreach ($oldMemberList as $om) {
+            if (!empty($om->member_id)) {
+                $oldMemberNameById[$om->member_id] = $om->third_member;
+            }
+        }
+
+        $editRows = collect();
+        if (!empty($voucherNo)) {
+            // Debit/Credit Note rows share this table but are never opened on the Journal Voucher screen.
+            $editRows = JournalNotes::jvOnly(JournalVoucher::where('voucher_no', $voucherNo)
+                ->where('society_id', $societyId)
+                ->where('financial_year_id', $fyId))
+                ->orderBy('voucher_no')
+                ->get();
+        }
+
+        $items = JournalNotes::jvOnly(JournalVoucher::where('society_id', $societyId)
+            ->where('financial_year_id', $fyId))
+            ->orderBy('id')
             ->get();
 
-        return view('society.modules.journal-voucher', compact('items', 'fyId'));
+        // Enrich each row with the display title for whichever "side" (credit or
+        // debit) actually has a ledger/member set - mirrors the CakePHP loop that
+        // builds creadit_title / debit_title for the register table below the form.
+        foreach ($items as $jv) {
+            $ledgerId = $jv->jv_credit_ledger_head_id ?: $jv->jv_debit_ledger_head_id;
+            if ($ledgerId) {
+                $title = SocietyLedgerHead::where('id', $ledgerId)->value('title') ?? '';
+                if ($jv->jv_credit_ledger_head_id) $jv->creadit_title = $title;
+                elseif ($jv->jv_debit_ledger_head_id) $jv->debit_title = $title;
+            }
+
+            $memberId = $jv->jv_credit_member_head_id ?: $jv->jv_debit_member_head_id;
+            if ($memberId) {
+                $member = Member::find($memberId);
+                $displayName = $member->member_name ?? '';
+                // A row saved with a lower transfer number belongs to the previous
+                // owner; transfer has since overwritten member_name, so show the old name.
+                if ($member && $jv->member_transfer !== null && $jv->member_transfer < $member->member_transfer
+                        && !empty($oldMemberNameById[$memberId] ?? null)) {
+                    $displayName = $oldMemberNameById[$memberId];
+                }
+                if ($displayName !== '' && !empty($flatNoList[$memberId] ?? null)) {
+                    $displayName .= ' -- ' . $flatNoList[$memberId];
+                }
+                if ($jv->jv_credit_member_head_id) $jv->creadit_title = $displayName;
+                elseif ($jv->jv_debit_member_head_id) $jv->debit_title = $displayName;
+            }
+        }
+
+        return view('society.modules.journal-voucher', compact(
+            'items', 'fyId', 'memberList', 'oldMemberList', 'flatNoList', 'ledgerHeadList', 'editRows', 'voucherNo'
+        ));
+    }
+
+    public function deleteJournalVoucher($voucherNo)
+    {
+        $societyId = $this->societyId();
+        $deleted = JournalNotes::jvOnly(JournalVoucher::where('voucher_no', $voucherNo)->where('society_id', $societyId))->delete();
+
+        if ($deleted) {
+            return redirect()->route('society.journalVoucher')->with('success', 'The journal voucher has been deleted');
+        }
+        return redirect()->route('society.journalVoucher')->with('error', 'There was an error deleting the journal voucher. Please, try again.');
     }
 
     public function closingBalances()
@@ -1592,48 +3598,6 @@ class SocietyModuleController extends Controller
     }
 
     // ─── Bill Print ────────────────────────────────────────────────
-
-    public function billWithReceiptTabular()
-    {
-        return view('society.modules.placeholder', [
-            'title' => 'Bill With Receipt Tabular',
-        ]);
-    }
-
-    public function billTaxInvoiceGst()
-    {
-        return view('society.modules.placeholder', [
-            'title' => 'Bill Tax Invoice GST',
-        ]);
-    }
-
-    public function billFullPage()
-    {
-        return view('society.modules.placeholder', [
-            'title' => 'Bill Full Page',
-        ]);
-    }
-
-    public function billHalfPage()
-    {
-        return view('society.modules.placeholder', [
-            'title' => 'Bill Half Page',
-        ]);
-    }
-
-    public function billWithInterestGst()
-    {
-        return view('society.modules.placeholder', [
-            'title' => 'Bill With Interest GST',
-        ]);
-    }
-
-    public function billSummaryWithPrevData()
-    {
-        return view('society.modules.placeholder', [
-            'title' => 'Bill Summary With Prev Data',
-        ]);
-    }
 
     public function billReceipt()
     {
@@ -2297,6 +4261,33 @@ class SocietyModuleController extends Controller
             ];
         }
 
+        // Ported from Cake getAllMembersBillSummaryDetails() (~SocietyBillsController.php:8025-8059):
+        // drives which of Update / Current Bill Update / "Historical bill - locked" the bill
+        // modal shows. NULL (never configured) = old Update available on every bill. Explicit
+        // 0/1 both hide old Update; 1 additionally allows Current Bill Update, but only on the
+        // member's own actual latest bill (isCurrentBill), independently re-derived here rather
+        // than trusted from the request - never MAX(id), the same member+society+bill_type+
+        // financial_year+transfer scope used everywhere else this "current bill" concept appears.
+        $societyParamForGate = SocietyParameter::where('society_id', $sid)->first();
+        $curBillUpdateRawVal = $societyParamForGate->current_bill_update_enabled ?? null;
+        $response['oldUpdateAvailable'] = is_null($curBillUpdateRawVal) ? 1 : 0;
+        $response['currentBillUpdateEnabled'] = ((int) $curBillUpdateRawVal === 1) ? 1 : 0;
+        $response['isCurrentBill'] = 0;
+        if ($response['currentBillUpdateEnabled'] && $bill->member_id) {
+            $settlementServiceForGate = app(BillSettlementService::class);
+            $latestTransferNo = $settlementServiceForGate->getLatestTransferNo($bill->member_id, $sid);
+            $currentBillForModal = MemberBillSummary::where('member_id', $bill->member_id)
+                ->where('society_id', $sid)
+                ->where('bill_type', $bill->bill_type)
+                ->where('member_transfer', $latestTransferNo)
+                ->where('financial_year_id', $bill->financial_year_id)
+                ->orderByDesc('bill_generated_date')->orderByDesc('id')
+                ->first();
+            if ($currentBillForModal && (int) $currentBillForModal->id === (int) $bill->id) {
+                $response['isCurrentBill'] = 1;
+            }
+        }
+
         $response['error'] = 0;
         $response['MemberBillSummary'] = $billData;
         $response['MemberTariff'] = $memberTariffData;
@@ -2310,6 +4301,11 @@ class SocietyModuleController extends Controller
         return response()->json($response);
     }
 
+    // Ported from Cake updateMemberBillSummaryById() plus the "Current Bill Update" society
+    // parameter it now respects. Cake itself never added a server-side check here (the old
+    // button is only hidden client-side there) - this adds one, since the user-facing
+    // requirement is that previous/all-bill updates must be genuinely blocked, not just
+    // hidden, once the parameter has been explicitly set either way.
     public function updateMemberBillSummaryById(Request $request)
     {
         $sid = $this->societyId();
@@ -2326,6 +4322,15 @@ class SocietyModuleController extends Controller
             return response()->json($response);
         }
 
+        $params = SocietyParameter::where('society_id', $sid)->first();
+        $curVal = $params->current_bill_update_enabled ?? null;
+        if (!is_null($curVal)) {
+            $response['error_message'] = ((int) $curVal === 1)
+                ? 'All-bill Update is disabled for this society. Use Current Bill Update instead (only available on the latest bill).'
+                : 'Manual bill update is disabled for this society (Society Parameters > Current Bill Update = No).';
+            return response()->json($response);
+        }
+
         $bill->update([
             'discount' => floatval($request->input('discount', 0)),
             'principal_adjusted' => floatval($request->input('principal_adjusted', 0)),
@@ -2333,9 +4338,19 @@ class SocietyModuleController extends Controller
             'interest_on_due_amount' => floatval($request->input('interest_on_due_amount', 0)),
         ]);
 
+        $billType = $bill->bill_type ?: 'reg';
+        $tariff = $request->input('tariff', []);
+        $memberIdForTariff = $request->input('member_id', $bill->member_id);
+        $billNoForTariff = $request->input('bill_no');
+        if (!empty($tariff) && !empty($billNoForTariff)) {
+            $this->updateMemberTariffDetails(
+                $tariff, $memberIdForTariff, $billNoForTariff, $request->input('month', $bill->month),
+                $request->input('bill_generated_date', $bill->bill_generated_date), $billType, $bill->financial_year_id
+            );
+        }
+
         $settlementService = app(BillSettlementService::class);
         $memberTransfer = $settlementService->getLatestTransferNo($bill->member_id, $sid);
-        $billType = $bill->bill_type ?: 'reg';
 
         $settlementService->recalculateMemberBills(
             $bill->member_id, $sid, $billType, $fyId, $memberTransfer
@@ -2343,6 +4358,91 @@ class SocietyModuleController extends Controller
 
         $response['error'] = 0;
         $response['error_message'] = '';
+        return response()->json($response);
+    }
+
+    // Ported from Cake updateCurrentMemberBillSummaryById() (~SocietyBillsController.php:9464):
+    // only runs when the society has current_bill_update_enabled = 1 (Yes), and only against
+    // the member's own actual latest bill - both re-checked here independently, never trusted
+    // from the request. Recalculation itself goes through
+    // BillSettlementService::recalculateCurrentBillOnly(), which guarantees no other bill's
+    // row is ever persisted-changed (see that method's docblock for how).
+    public function updateCurrentMemberBillSummaryById(Request $request)
+    {
+        $sid = $this->societyId();
+        $response = ['error' => 1, 'error_message' => 'Current bill could not be updated'];
+
+        $summaryId = $request->input('id');
+        if (!$summaryId) {
+            $response['error_message'] = 'Invalid bill id.';
+            return response()->json($response);
+        }
+
+        $bill = MemberBillSummary::where('id', $summaryId)->where('society_id', $sid)->first();
+        if (!$bill) {
+            $response['error_message'] = 'Bill not found.';
+            return response()->json($response);
+        }
+
+        $params = SocietyParameter::where('society_id', $sid)->first();
+        if (empty($params->current_bill_update_enabled)) {
+            $response['error_message'] = 'Current Bill Update is not enabled for this society. Enable it from Society Parameters.';
+            return response()->json($response);
+        }
+
+        $settlementService = app(BillSettlementService::class);
+        $billType = $bill->bill_type ?: 'reg';
+        $financialYearId = $bill->financial_year_id;
+        $memberTransfer = $settlementService->getLatestTransferNo($bill->member_id, $sid);
+
+        $currentBillLookup = MemberBillSummary::where('member_id', $bill->member_id)
+            ->where('society_id', $sid)
+            ->where('bill_type', $billType)
+            ->where('member_transfer', $memberTransfer)
+            ->where('financial_year_id', $financialYearId)
+            ->orderByDesc('bill_generated_date')->orderByDesc('id')
+            ->first();
+
+        if (!$currentBillLookup) {
+            $response['error_message'] = 'No current bill found for this member.';
+            return response()->json($response);
+        }
+
+        if ((int) $currentBillLookup->id !== (int) $bill->id) {
+            $response['error_message'] = 'This is not the current/latest bill. Current Bill Update only applies to the latest generated bill.';
+            return response()->json($response);
+        }
+
+        $bill->update([
+            'discount' => floatval($request->input('discount', $bill->discount ?? 0)),
+            'principal_adjusted' => floatval($request->input('principal_adjusted', $bill->principal_adjusted ?? 0)),
+            'interest_adjusted' => floatval($request->input('interest_adjusted', $bill->interest_adjusted ?? 0)),
+            'interest_on_due_amount' => floatval($request->input('interest_on_due_amount', $bill->interest_on_due_amount ?? 0)),
+        ]);
+
+        $tariff = $request->input('tariff', []);
+        $memberIdForTariff = $request->input('member_id', $bill->member_id);
+        $billNoForTariff = $request->input('bill_no', $bill->bill_no);
+        if (!empty($tariff) && !empty($billNoForTariff)) {
+            $this->updateMemberTariffDetails(
+                $tariff, $memberIdForTariff, $billNoForTariff, $request->input('month', $bill->month),
+                $request->input('bill_generated_date', $bill->bill_generated_date), $billType, $financialYearId
+            );
+        }
+
+        $ok = $settlementService->recalculateCurrentBillOnly(
+            $bill->member_id, $sid, $billType, $financialYearId, $memberTransfer, $bill->id
+        );
+
+        if (!$ok) {
+            $response['error_message'] = 'Current bill could not be updated.';
+            return response()->json($response);
+        }
+
+        $response['error'] = 0;
+        $response['error_message'] = 'Current bill updated successfully.';
+        $response['id'] = $bill->id;
+        $response['month'] = $bill->month;
         return response()->json($response);
     }
 
@@ -2420,6 +4520,93 @@ class SocietyModuleController extends Controller
         }
 
         return response()->json($response);
+    }
+
+    // Ported from Cake updateMemberTarrifDetails() (~SocietyBillsController.php:10875):
+    // the only inputs on the bill-edit modal meant to be hand-edited are the Particulars/
+    // Amount lines - this writes each edited line back to member_bill_generates (recomputing
+    // GST the same way generateBill() does), then re-sums monthly_amount/tax totals onto the
+    // bill itself. Everything else on the modal (Bill Amount, arrears, Amount Payable) is
+    // read-only in the view and gets its numbers from BillSettlementService afterward, never
+    // written here. Skips Cake's updateAppliedParameterOnBill()/BillAppliedParameter write -
+    // that's per-bill historical interest-method tracking, a separate feature this doesn't
+    // touch; BillSettlementService currently always uses the society's CURRENT parameters.
+    private function updateMemberTariffDetails($tariff, $memberId, $billNo, $billMonth, $billGeneratedDate, $billType, $financialYearId)
+    {
+        if (empty($tariff) || empty($memberId) || empty($billNo)) {
+            return false;
+        }
+
+        $sid = $this->societyId();
+        $params = SocietyParameter::where('society_id', $sid)->first();
+        if (!$params) {
+            return false;
+        }
+
+        $multiplyTariffAmountValue = $this->multiplyTariffAmountByBillingFrequency($params);
+        $billLedgerHeadSettings = $this->memberRegularBillLedgerHeadSettings($sid);
+
+        $totalMonthlyAmount = 0;
+        $igstTotal = $cgstTotal = $sgstTotal = $taxTotal = 0;
+
+        foreach ($tariff as $ledgerHeadId => $amount) {
+            $amount = floatval($amount);
+            $totalMonthlyAmount += $amount;
+            $igstAmt = $cgstAmt = $sgstAmt = $lineTax = 0;
+
+            if (!empty($billLedgerHeadSettings['tax']) && in_array((int) $ledgerHeadId, $billLedgerHeadSettings['tax'], true)) {
+                if ($params->igst_tax_per > 0) {
+                    $igstAmt = ($amount * $multiplyTariffAmountValue) * ($params->igst_tax_per / 100);
+                }
+                if ($params->cgst_tax_per > 0) {
+                    $cgstAmt = ($amount * $multiplyTariffAmountValue) * ($params->cgst_tax_per / 100);
+                }
+                if ($params->sgst_tax_per > 0) {
+                    $sgstAmt = ($amount * $multiplyTariffAmountValue) * ($params->sgst_tax_per / 100);
+                }
+                $lineTax = $igstAmt + $cgstAmt + $sgstAmt;
+                $igstTotal += $igstAmt;
+                $cgstTotal += $cgstAmt;
+                $sgstTotal += $sgstAmt;
+                $taxTotal += $lineTax;
+            }
+
+            $existing = MemberBillGenerate::where('society_id', $sid)
+                ->where('month', $billMonth)
+                ->where('ledger_head_id', $ledgerHeadId)
+                ->where('member_id', $memberId)
+                ->where('bill_type', $billType)
+                ->where('financial_year_id', $financialYearId)
+                ->first();
+
+            if ($existing) {
+                $existing->update([
+                    'amount' => $amount, 'igst_total' => $igstAmt, 'cgst_total' => $cgstAmt,
+                    'sgst_total' => $sgstAmt, 'tax_total' => $lineTax,
+                ]);
+            } else {
+                MemberBillGenerate::create([
+                    'member_id' => $memberId, 'bill_type' => $billType, 'society_id' => $sid,
+                    'month' => $billMonth, 'ledger_head_id' => $ledgerHeadId, 'amount' => $amount,
+                    'igst_total' => $igstAmt, 'cgst_total' => $cgstAmt, 'sgst_total' => $sgstAmt,
+                    'tax_total' => $lineTax, 'bill_number' => $billNo, 'bill_generated_date' => $billGeneratedDate,
+                    'financial_year_id' => $financialYearId,
+                ]);
+            }
+        }
+
+        return MemberBillSummary::where('society_id', $sid)
+            ->where('bill_no', $billNo)
+            ->where('month', $billMonth)
+            ->where('member_id', $memberId)
+            ->where('financial_year_id', $financialYearId)
+            ->update([
+                'monthly_amount' => $totalMonthlyAmount,
+                'igst_total' => $igstTotal,
+                'cgst_total' => $cgstTotal,
+                'sgst_total' => $sgstTotal,
+                'tax_total' => $taxTotal,
+            ]) !== false;
     }
 
     private function memberRegularBillLedgerHeadSettings($sid)
@@ -2700,12 +4887,12 @@ class SocietyModuleController extends Controller
 
     private function getCreditedJvData($endDate, $memberId, $societyId, $paymentData, $memberTransfer, $fyId)
     {
-        $jvRows = DB::table('journal_vouchers')
+        $jvRows = JournalNotes::excludeManual(DB::table('journal_vouchers')
             ->where('voucher_date', '<=', $endDate)
             ->where('jv_credit_member_head_id', $memberId)
             ->where('society_id', $societyId)
             ->where('financial_year_id', $fyId)
-            ->where('member_transfer', $memberTransfer)
+            ->where('member_transfer', $memberTransfer))
             ->select('id', 'jv_amount_credited', 'voucher_date')
             ->get();
 
@@ -2727,13 +4914,13 @@ class SocietyModuleController extends Controller
     private function getDebitedJvAmount($fromDate, $toDate, $memberId, $societyId, $memberTransfer, $fyId)
     {
         if (empty($fromDate) || empty($toDate)) return 0;
-        return floatval(DB::table('journal_vouchers')
+        return floatval(JournalNotes::excludeManual(DB::table('journal_vouchers')
             ->where('voucher_date', '>=', $fromDate)
             ->where('voucher_date', '<=', $toDate)
             ->where('jv_debit_member_head_id', $memberId)
             ->where('society_id', $societyId)
             ->where('member_transfer', $memberTransfer)
-            ->where('financial_year_id', $fyId)
+            ->where('financial_year_id', $fyId))
             ->sum('jv_amount_debited'));
     }
 

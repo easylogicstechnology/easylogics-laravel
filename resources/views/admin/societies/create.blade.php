@@ -39,14 +39,6 @@
         @php
             $society = $singleSocietyRecord?->societies?->first();
         @endphp
-        <div class="reseller-fields" style="{{ (!$singleSocietyRecord || $singleSocietyRecord->access_level != 3) ? 'display:none' : '' }}">
-            <div class="form-group">
-                <label>Member Credit Limit</label>
-                <input type="number" class="form-control" name="member_credit" placeholder="0 = Unlimited" value="{{ $singleSocietyRecord->member_credit ?? 0 }}" min="0">
-                <small style="color:#999; font-size:12px;">Maximum members this reseller can create across all societies. 0 = no limit.</small>
-            </div>
-        </div>
-
         <div class="society-fields" style="{{ ($singleSocietyRecord && $singleSocietyRecord->access_level == 3) ? 'display:none' : '' }}">
             <div class="form-group">
                 <label>Society Name <span class="required">*</span></label>
@@ -77,7 +69,6 @@
 function toggleSocietyFields() {
     var val = document.getElementById('access_level').value;
     document.querySelector('.society-fields').style.display = (val === '3') ? 'none' : '';
-    document.querySelector('.reseller-fields').style.display = (val === '3') ? '' : 'none';
 }
 
 function generateShortCode(name) {

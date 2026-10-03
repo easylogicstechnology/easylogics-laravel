@@ -15,6 +15,7 @@
         6 => ["4"=>"April-March"],
     ];
     $__gbMonths = $__gbFreqMonths[$__gbFreqId] ?? $__gbFreqMonths[1];
+    $__gbFyStartYear = $__gbFy ? (int) date('Y', strtotime($__gbFy->year_start_date)) : (int) date('Y');
 @endphp
 <div id="generateBillModal" class="modal-overlay" style="display:none;">
 <div class="modal-box" style="max-width:700px;">
@@ -37,7 +38,7 @@
             </div>
             <div class="form-group" style="flex:1; min-width:120px;">
                 <label>Bill For<span style="color:red;">*</span></label>
-                <select class="form-control" id="gb_month">
+                <select class="form-control" id="gb_month" onchange="gbUpdateBillDates(this.value)">
                     <option value="">Select Month</option>
                     @foreach($__gbMonths as $mId => $mName)
                     <option value="{{ $mId }}">{{ $mName }}</option>
@@ -78,3 +79,21 @@
     </div>
 </div>
 </div>
+<script>
+// Ported from Cake Util::getBillDateBilldueDateFromFinancialYearDate(): given the
+// financial year's start calendar year and a bill month (1-12), Jan/Feb/Mar fall in
+// the FY's second calendar year, April-December in its first - then fill Bill
+// Date/Due Date with that month's first/last day.
+function gbUpdateBillDates(month) {
+    if (!month) return;
+    var fyStartYear = {{ $__gbFyStartYear }};
+    var m = parseInt(month, 10);
+    var year = m <= 3 ? fyStartYear + 1 : fyStartYear;
+    var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+    var firstDate = year + '-' + pad(m) + '-01';
+    var lastDay = new Date(year, m, 0).getDate();
+    var lastDate = year + '-' + pad(m) + '-' + pad(lastDay);
+    document.getElementById('gb_bill_date').value = firstDate;
+    document.getElementById('gb_due_date').value = lastDate;
+}
+</script>

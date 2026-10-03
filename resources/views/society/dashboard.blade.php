@@ -18,10 +18,14 @@
     .bg-blue { background: #3498db; }
     .link-more { color: #0f4fa8; font-size: 13px; text-decoration: none; }
     .link-more:hover { text-decoration: underline; }
+    .society-heading-ticker { overflow: hidden; white-space: nowrap; max-width: 100%; }
+    .society-heading-ticker .ticker-inner { display: inline-block; font-size: 16px; animation: society-heading-scroll 14s linear infinite; }
+    .society-heading-ticker:hover .ticker-inner { animation-play-state: paused; }
+    @keyframes society-heading-scroll { 0% { transform: translateX(100%); } 100% { transform: translateX(-100%); } }
 </style>
 
 <div class="page-header">
-    <h2>{{ $society->society_name ?? 'Society' }} Dashboard</h2>
+    <h2 class="society-heading-ticker"><span class="ticker-inner">{{ $society->society_name ?? 'Society' }} Dashboard</span></h2>
 </div>
 
 @if(!session('fy.year_id'))

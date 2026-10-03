@@ -1,0 +1,97 @@
+name: Deploy
+
+# main -> production, dev -> testing (same mapping as the CakePHP repo).
+# While only the test server exists, deploy it by hand from the Actions tab:
+# Run workflow -> target "testing" (deploys the main branch).
+#
+# Runs on a self-hosted runner installed on the server (the server dials OUT to
+# GitHub, so no SSH secrets). The runner must be registered to THIS repository,
+# as the site user of the Laravel site, with the label `testing` or `production`.
+# Setup: docs/DEPLOYMENT.md
+on:
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment to deploy
+        type: choice
+        options: [testing, production]
+        required: true
+
+concurrency:
+  group: deploy-${{ inputs.target || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on:
+      - self-hosted
+      - "${{ inputs.target || (github.ref_name == 'main' && 'production' || 'testing') }}"
+
+    # Add a required reviewer on the `production` environment for an approval click.
+    environment: ${{ inputs.target || (github.ref_name == 'main' && 'production' || 'testing') }}
+
+    timeout-minutes: 15
+
+    steps:
+      - name: Resolve branch for this environment
+        id: target
+        run: |
+          REF="${{ inputs.target || github.ref_name }}"
+          if [ "$REF" = "production" ] || [ "$REF" = "main" ]; then
+            echo "branch=main" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only .github is needed (deploy.sh lives there).
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+
+      - name: Check deploy path
+        env:
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          if [ -z "$DEPLOY_PATH" ]; then
+            echo "::error::DEPLOY_PATH is not set for this environment."
+            echo "Add it under: Settings -> Environments -> (testing|production) -> Environment variables"
+            echo "  DEPLOY_PATH   /home/<user>/htdocs/<domain>"
+            exit 1
+          fi
+          if [ ! -d "$DEPLOY_PATH/.git" ]; then
+            echo "::error::$DEPLOY_PATH is not a git checkout on this runner."
+            echo "Wrong path, or the runner is on the wrong server. See docs/DEPLOYMENT.md."
+            exit 1
+          fi
+          echo "Deploying into $DEPLOY_PATH"
+
+      - name: Deploy
+        env:
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          BRANCH: ${{ steps.target.outputs.branch }}
+          # Laravel migrations run against the DB. Off unless the environment
+          # variable RUN_MIGRATIONS is set to 1 (the DB is shared with CakePHP).
+          RUN_MIGRATIONS: ${{ vars.RUN_MIGRATIONS || '0' }}
+        run: bash .github/scripts/deploy.sh "$DEPLOY_PATH" "$BRANCH"
+
+      - name: Health check
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: |
+          if [ -z "$SITE_URL" ]; then
+            echo "SITE_URL not set for this environment - skipping health check."
+            exit 0
+          fi
+          for i in 1 2 3; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$SITE_URL" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "OK: $SITE_URL returned 200"
+              exit 0
+            fi
+            echo "attempt $i: got HTTP $code, retrying..."
+            sleep 5
+          done
+          echo "FAILED: $SITE_URL never returned 200 (last: $code)"
+          exit 1

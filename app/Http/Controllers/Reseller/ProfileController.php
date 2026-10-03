@@ -8,14 +8,14 @@ use App\Models\Reseller;
 use App\Models\ResellerSociety;
 use App\Models\Society;
 use App\Models\SocietyYearMapping;
+use App\Support\ResellerContext;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 
 class ProfileController extends Controller
 {
     public function updateProfile(Request $request)
     {
-        $resellerId = Auth::id();
+        $resellerId = ResellerContext::id();
         $profile = Reseller::where('user_id', $resellerId)->first();
 
         if ($request->isMethod('post')) {
@@ -61,7 +61,7 @@ class ProfileController extends Controller
 
     public function financeYearMapping(Request $request)
     {
-        $resellerId = Auth::id();
+        $resellerId = ResellerContext::id();
 
         $societyIds = ResellerSociety::where('reseller_id', $resellerId)
             ->pluck('societie_id')
