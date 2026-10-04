@@ -1,8 +1,9 @@
 name: Deploy
 
-# main -> production, dev -> testing (same mapping as the CakePHP repo).
-# While only the test server exists, deploy it by hand from the Actions tab:
-# Run workflow -> target "testing" (deploys the main branch).
+# production -> production, dev -> testing.
+# Push to the `production` branch auto-deploys to the live server; push to `dev`
+# deploys to the test server. You can also deploy by hand from the Actions tab:
+# Run workflow -> target "production" (or "testing").
 #
 # Runs on a self-hosted runner installed on the server (the server dials OUT to
 # GitHub, so no SSH secrets). The runner must be registered to THIS repository,
@@ -10,7 +11,7 @@ name: Deploy
 # Setup: docs/DEPLOYMENT.md
 on:
   push:
-    branches: [dev, main]
+    branches: [dev, production]
   workflow_dispatch:
     inputs:
       target:
@@ -27,10 +28,10 @@ jobs:
   deploy:
     runs-on:
       - self-hosted
-      - "${{ inputs.target || (github.ref_name == 'main' && 'production' || 'testing') }}"
+      - "${{ inputs.target || (github.ref_name == 'production' && 'production' || 'testing') }}"
 
     # Add a required reviewer on the `production` environment for an approval click.
-    environment: ${{ inputs.target || (github.ref_name == 'main' && 'production' || 'testing') }}
+    environment: ${{ inputs.target || (github.ref_name == 'production' && 'production' || 'testing') }}
 
     timeout-minutes: 15
 
@@ -39,8 +40,8 @@ jobs:
         id: target
         run: |
           REF="${{ inputs.target || github.ref_name }}"
-          if [ "$REF" = "production" ] || [ "$REF" = "main" ]; then
-            echo "branch=main" >> "$GITHUB_OUTPUT"
+          if [ "$REF" = "production" ]; then
+            echo "branch=production" >> "$GITHUB_OUTPUT"
           else
             echo "branch=dev" >> "$GITHUB_OUTPUT"
           fi
