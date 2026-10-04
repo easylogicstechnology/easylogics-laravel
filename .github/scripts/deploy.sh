@@ -58,9 +58,9 @@ else
 	echo "Skipping migrations (RUN_MIGRATIONS is not 1)."
 fi
 
-php artisan optimize:clear
+
 php artisan config:cache
 php artisan route:cache
 php artisan view:cache
-
+php artisan optimize:clear
 echo "Deployed $(git rev-parse --short HEAD) ($BRANCH) to $DEPLOY_PATH"
