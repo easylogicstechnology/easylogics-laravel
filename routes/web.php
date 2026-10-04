@@ -42,6 +42,11 @@ Route::get('/', function () {
 });
 Route::post('/submit-enquiry', [HomeController::class, 'submitEnquiry'])->name('enquiry.submit');
 
+// Public static content pages (CakePHP: about_us / termandcondition / privacy_policy).
+Route::view('/about', 'pages.about')->name('about');
+Route::view('/terms', 'pages.terms')->name('terms');
+Route::view('/privacy', 'pages.privacy')->name('privacy');
+
 Route::middleware('guest')->group(function () {
     Route::get('/login', [LoginController::class, 'showLoginForm'])->name('login');
     Route::post('/login', [LoginController::class, 'login']);
