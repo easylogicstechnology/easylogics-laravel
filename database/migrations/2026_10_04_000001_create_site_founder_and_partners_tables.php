@@ -8,16 +8,22 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('site_founder', function (Blueprint $table) {
-            $table->id();
-            $table->string('name', 150);
-            $table->string('designation', 150)->nullable();
-            $table->text('description')->nullable();
-            $table->string('image_path', 255)->nullable();
-            $table->tinyInteger('display_status')->default(1);
-            $table->datetime('cdate')->nullable();
-            $table->datetime('udate')->nullable();
-        });
+        if (!Schema::hasTable('site_founder')) {
+            Schema::create('site_founder', function (Blueprint $table) {
+                $table->id();
+                $table->string('name', 150);
+                $table->string('designation', 150)->nullable();
+                $table->text('description')->nullable();
+                $table->string('image_path', 255)->nullable();
+                $table->tinyInteger('display_status')->default(1);
+                $table->datetime('cdate')->nullable();
+                $table->datetime('udate')->nullable();
+            });
+        }
+
+        if (Schema::hasTable('site_partners')) {
+            return;
+        }
 
         Schema::create('site_partners', function (Blueprint $table) {
             $table->id();
