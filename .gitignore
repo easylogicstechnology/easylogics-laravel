@@ -23,7 +23,8 @@
 /public/storage
 /storage/*.key
 /storage/pail
-# /vendor — included for Hostinger shared hosting (no composer on server)
+/vendor
+/package-lock.json
 _ide_helper.php
 Homestead.json
 Homestead.yaml
