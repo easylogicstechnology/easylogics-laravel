@@ -1825,9 +1825,61 @@ class SocietyModuleController extends Controller
         ]);
     }
 
-    public function downloadMemberOpeningBalance()
+    /**
+     * Updatable columns of the opening-balance sheet: key => [CSV header, members column, type].
+     * name / flat / wing double as the row's reference columns; when not ticked they are shown
+     * as "... (Reference)" and ignored on upload.
+     */
+    private function memberOpeningFieldMap(): array
+    {
+        return [
+            'name'             => ['Member Name', 'member_name', 'text'],
+            'flat'             => ['Flat/Shop No', 'flat_no', 'text'],
+            'wing'             => ['Wing Name', 'wing_id', 'wing'],
+            'mobile'           => ['Mobile No', 'member_phone', 'text'],
+            'email'            => ['Email Address', 'member_email', 'text'],
+            'area'             => ['Area', 'area', 'text'],
+            'op_principal'     => ['Opening Principal', 'op_principal', 'num'],
+            'op_interest'      => ['Opening Interest', 'op_interest', 'num'],
+            'op_tax'           => ['Opening Tax', 'op_tax', 'num'],
+            'op_bill_date'     => ['Opening Bill Date', 'op_bill_date', 'date'],
+            'op_bill_due_date' => ['Opening Bill Due Date', 'op_bill_due_date', 'date'],
+        ];
+    }
+
+    /** dd-mm-yyyy / dd/mm/yyyy / yyyy-mm-dd (and the like) to Y-m-d; null when it is not a real date. */
+    private function parseOpeningSheetDate(string $value): ?string
+    {
+        $value = trim($value);
+        if (preg_match('/^(\d{4})-(\d{1,2})-(\d{1,2})$/', $value, $m)) {
+            [$y, $mo, $d] = [(int) $m[1], (int) $m[2], (int) $m[3]];
+        } elseif (preg_match('/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})$/', $value, $m)) {
+            [$d, $mo, $y] = [(int) $m[1], (int) $m[2], (int) $m[3]];
+            if ($y < 100) {
+                $y += 2000;
+            }
+            if ($mo > 12 && $d <= 12) {
+                [$d, $mo] = [$mo, $d];
+            }
+        } else {
+            $ts = strtotime($value);
+            return $ts === false ? null : date('Y-m-d', $ts);
+        }
+
+        return checkdate($mo, $d, $y) ? sprintf('%04d-%02d-%02d', $y, $mo, $d) : null;
+    }
+
+    public function downloadMemberOpeningBalance(Request $request)
     {
         $societyId = $this->societyId();
+        $fieldMap = $this->memberOpeningFieldMap();
+
+        // only the ticked columns are downloaded (none ticked = all, as before)
+        $selected = array_values(array_intersect(array_keys($fieldMap), (array) $request->query('fields', [])));
+        if (!$selected) {
+            $selected = array_keys($fieldMap);
+        }
+
         $members = Member::where('society_id', $societyId)
             ->where('status', 1)
             ->with(['building', 'wing'])
@@ -1840,23 +1892,46 @@ class SocietyModuleController extends Controller
             'Content-Disposition' => "attachment; filename=\"{$filename}\"",
         ];
 
-        $callback = function () use ($members) {
+        $callback = function () use ($members, $selected, $fieldMap) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['Member ID', 'Member Name', 'Flat/Shop No', 'Building Name', 'Wing Name', 'Mobile No', 'Email Address', 'Area', 'Opening Principal', 'Opening Interest', 'Opening Tax']);
+            $nameSelected = in_array('name', $selected, true);
+            $flatSelected = in_array('flat', $selected, true);
+            $wingSelected = in_array('wing', $selected, true);
+            $columns = array_values(array_diff($selected, ['name', 'flat', 'wing']));
+
+            $head = [
+                'Member ID',
+                $nameSelected ? 'Member Name' : 'Member (Reference)',
+                $flatSelected ? 'Flat/Shop No' : 'Flat/Shop No (Reference)',
+                'Building Name',
+                $wingSelected ? 'Wing Name' : 'Wing Name (Reference)',
+            ];
+            foreach ($columns as $key) {
+                $head[] = $fieldMap[$key][0];
+            }
+            fputcsv($out, $head);
+
             foreach ($members as $m) {
-                fputcsv($out, [
+                $line = [
                     $m->id,
-                    trim($m->member_prefix . ' ' . $m->member_name),
+                    // the full name (with prefix) is only a reference unless Member Name itself is ticked for update
+                    $nameSelected ? ($m->member_name ?? '') : trim($m->member_prefix . ' ' . $m->member_name),
                     $m->flat_no ?? '',
                     $m->building->building_name ?? '',
                     $m->wing->wing_name ?? '',
-                    $m->member_phone ?? '',
-                    $m->member_email ?? '',
-                    $m->area ?? '',
-                    $m->op_principal ?? '0.00',
-                    $m->op_interest ?? '0.00',
-                    $m->op_tax ?? '0.00',
-                ]);
+                ];
+                foreach ($columns as $key) {
+                    [, $col, $type] = $fieldMap[$key];
+                    $value = $m->{$col};
+                    if ($type === 'num') {
+                        $value = $value ?? '0.00';
+                    } elseif ($type === 'date') {
+                        $ts = $value ? strtotime((string) $value) : false;
+                        $value = ($ts && $ts > 86400) ? date('d-m-Y', $ts) : '';
+                    }
+                    $line[] = $value ?? '';
+                }
+                fputcsv($out, $line);
             }
             fclose($out);
         };
@@ -1871,25 +1946,78 @@ class SocietyModuleController extends Controller
         $societyId = $this->societyId();
         $file = $request->file('member_csv');
         $handle = fopen($file->getRealPath(), 'r');
-        $header = fgetcsv($handle);
+        $header = fgetcsv($handle) ?: [];
+
+        // The header row decides what is updated: only the columns present in the file
+        // (the ones ticked at download) are touched, everything else stays as it is.
+        $fieldMap = $this->memberOpeningFieldMap();
+        $columnIndex = [];
+        $memberIdIndex = 0;
+        foreach ($header as $i => $title) {
+            $title = strtolower(trim(preg_replace('/^\xEF\xBB\xBF/', '', (string) $title)));
+            if ($title === 'member id') {
+                $memberIdIndex = $i;
+            }
+            foreach ($fieldMap as $key => $def) {
+                if ($title === strtolower($def[0])) {
+                    $columnIndex[$key] = $i;
+                }
+            }
+        }
+
+        if (!$columnIndex) {
+            fclose($handle);
+            return redirect()->route('society.memberIdentity')->with('error', 'No updatable columns found in the file. Please use the file downloaded from this page.');
+        }
+
         $updated = 0;
+        $problems = 0;
+        $wingIds = [];
 
         while (($row = fgetcsv($handle)) !== false) {
-            if (count($row) < 11) continue;
-            $memberId = $row[0];
+            $memberId = trim($row[$memberIdIndex] ?? '');
+            if ($memberId === '') continue;
+
             $member = Member::where('id', $memberId)->where('society_id', $societyId)->first();
-            if ($member) {
-                $member->update([
-                    'op_principal' => $row[8] ?: 0,
-                    'op_interest' => $row[9] ?: 0,
-                    'op_tax' => $row[10] ?: 0,
-                ]);
+            if (!$member) {
+                $problems++;
+                continue;
+            }
+
+            // blank cells are skipped, so an empty cell never wipes existing data
+            $data = [];
+            $rowFailed = false;
+            foreach ($columnIndex as $key => $i) {
+                $value = trim($row[$i] ?? '');
+                if ($value === '') continue;
+                [, $col, $type] = $fieldMap[$key];
+
+                if ($type === 'num') {
+                    $data[$col] = (float) str_replace(',', '', $value);
+                } elseif ($type === 'date') {
+                    $date = $this->parseOpeningSheetDate($value);
+                    $date === null ? $rowFailed = true : $data[$col] = $date;
+                } elseif ($type === 'wing') {
+                    // wing is picked by name from the member's own building
+                    $cacheKey = $member->building_id . '|' . strtoupper($value);
+                    $wingIds[$cacheKey] ??= (int) Wing::where('society_id', $societyId)
+                        ->where('building_id', $member->building_id)->where('wing_name', $value)->value('id');
+                    $wingIds[$cacheKey] > 0 ? $data[$col] = $wingIds[$cacheKey] : $rowFailed = true;
+                } else {
+                    $data[$col] = $value;
+                }
+            }
+
+            if ($rowFailed) $problems++;
+            if ($data) {
+                $member->update($data);
                 $updated++;
             }
         }
         fclose($handle);
 
-        return redirect()->route('society.memberIdentity')->with('success', "{$updated} members opening balance updated.");
+        $message = "{$updated} members updated." . ($problems ? " {$problems} rows had a problem (unknown member, wing or date) and were not fully updated." : '');
+        return redirect()->route('society.memberIdentity')->with('success', $message);
     }
 
     public function uploadMemberCsv(Request $request)
@@ -4743,10 +4871,17 @@ class SocietyModuleController extends Controller
                 $interestOnDue = 0;
             } elseif ($interestTypeId == 2) {
                 $principalAmount = floatval($lastMonthBillDetails['principal_balance'] ?? 0) - floatval($lastMonthBillDetails['interest_free_amount'] ?? 0);
+                // Nothing unpaid on the last bill (zero, or an advance shown as a negative balance): no interest.
+                if ($principalAmount <= 0) {
+                    return 0;
+                }
                 $interestPerMonth = $principalAmount * (($interestRate / 12) / 100);
                 $interestOnDue = round($interestPerMonth * $delayMonth);
             } elseif ($interestTypeId == 3) {
                 $balAmount = floatval($lastMonthBillDetails['balance_amount'] ?? 0) - floatval($lastMonthBillDetails['interest_free_amount'] ?? 0);
+                if ($balAmount <= 0) {
+                    return 0;
+                }
                 $interestPerMonth = $balAmount * (($interestRate / 12) / 100);
                 $interestOnDue = round($interestPerMonth * $delayMonth);
             }
@@ -4754,12 +4889,75 @@ class SocietyModuleController extends Controller
         return $interestOnDue;
     }
 
+    /**
+     * Calendar days from $startDate to $endDate; an end on or before the start is 0 days (never negative, and
+     * never the absolute value). Delay Days counts a late payment as  payment date - due date  (due 15-Jul, paid
+     * 16-Jul = 1 day, 20-Jul = 5 days, on or before the due date = 0). A segment that ends on a payment date and the
+     * next one that starts on it share that one boundary day, so it is not counted twice.
+     */
+    private function delayDayCount($startDate, $endDate): int
+    {
+        if (empty($startDate) || empty($endDate) || $startDate == '0000-00-00' || $endDate == '0000-00-00') {
+            return 0;
+        }
+        $days = (int) \Carbon\Carbon::parse($startDate)->startOfDay()->diffInDays(\Carbon\Carbon::parse($endDate)->startOfDay(), false);
+        return $days > 0 ? $days : 0;
+    }
+
+    /**
+     * Due date protection: a bill whose due date is on or after the date the next bill is generated has not become
+     * overdue, so it carries no interest. An empty / zero due date is left to the caller's old behaviour.
+     */
+    private function dueDateNotCrossed($dueDate, $newBillDate): bool
+    {
+        if (empty($dueDate) || empty($newBillDate) || $dueDate == '0000-00-00' || $newBillDate == '0000-00-00') {
+            return false;
+        }
+        $due = strtotime($dueDate);
+        $new = strtotime($newBillDate);
+        return $due !== false && $new !== false && $due >= $new;
+    }
+
+    /**
+     * Credit Notes dated INSIDE the interest window (after the last bill's date, before the new bill's date) settle
+     * principal exactly like a payment does, so interest must not keep running on that principal. Credits dated on
+     * or before the last bill's date are already counted by getCreditedJvData() in calculateAmountAvailable().
+     * Regular bills only; manual notes pinned to a bill are applied to that bill. Debit Notes are NOT a payment
+     * and are not touched here.
+     *
+     * @return \Illuminate\Support\Collection<int, object> payment-shaped rows (payment_date, amount_paid), oldest first
+     */
+    private function mergeCreditNotesIntoWindow($memberPaymentData, $afterDate, $beforeDate, $memberId, $sid, $memberTransfer, $fyId)
+    {
+        $jvRows = JournalNotes::excludeManual(DB::table('journal_vouchers')
+            ->where('voucher_date', '>', $afterDate)
+            ->where('voucher_date', '<', $beforeDate)
+            ->where('jv_credit_member_head_id', $memberId)
+            ->where('society_id', $sid)
+            ->where('financial_year_id', $fyId)
+            ->where('member_transfer', $memberTransfer))
+            ->select('id', 'jv_amount_credited', 'voucher_date')
+            ->get();
+
+        if ($jvRows->isEmpty()) {
+            return $memberPaymentData;
+        }
+
+        $credits = $jvRows->map(fn ($jv) => (object) [
+            'id' => 'JV-' . $jv->id,
+            'amount_paid' => $jv->jv_amount_credited,
+            'payment_date' => $jv->voucher_date,
+        ]);
+
+        return $memberPaymentData->concat($credits)->sortBy(fn ($p) => strtotime($p->payment_date))->values();
+    }
+
     private function delayDays($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDate, &$totalDays)
     {
         $interestOnDue = 0;
-        $date1 = \Carbon\Carbon::parse($billDueDate);
-        $date2 = \Carbon\Carbon::parse($paymentDate)->addDay();
-        $delayDays = $date1->diffInDays($date2);
+        // $paymentDate is where this segment ENDS: the payment date, or for the part still unpaid when the next bill
+        // is generated, the date of that bill. Days = end - start, no "+1 day" (that charged 1 day late as 2).
+        $delayDays = $this->delayDayCount($billDueDate, $paymentDate);
         $interestRate = $params->interest_rate;
         $interestTypeId = $params->interest_type_id;
 
@@ -4783,9 +4981,8 @@ class SocietyModuleController extends Controller
     private function delayMonths($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDate)
     {
         $interestOnDue = 0;
-        $date1 = \Carbon\Carbon::parse($billDueDate);
-        $date2 = \Carbon\Carbon::parse($paymentDate)->addDay();
-        $delayDays = $date1->diffInDays($date2);
+        // Same day count as delayDays(): $paymentDate is where the segment ends, days = end - start.
+        $delayDays = $this->delayDayCount($billDueDate, $paymentDate);
         $interestRate = $params->interest_rate;
         $interestTypeId = $params->interest_type_id;
 
@@ -4810,6 +5007,11 @@ class SocietyModuleController extends Controller
         $interestOnDue = 0;
         if (!empty($lastBillGeneratedDate) && !empty($billGeneratedDate)) {
             $date1 = \Carbon\Carbon::parse($billGeneratedDate)->addDay();
+            // $billGeneratedDate arrives as the day BEFORE the new bill, so $date1 is the new bill's own date.
+            // Due date protection: due on or after the new bill's date = not overdue yet = no interest.
+            if ($this->dueDateNotCrossed($billDueDate, $date1->format('Y-m-d'))) {
+                return 0;
+            }
             $date2 = \Carbon\Carbon::parse($lastBillGeneratedDate);
             $delayDays = $date2->diffInDays($date1);
             $interestRate = $params->interest_rate;
@@ -4939,7 +5141,12 @@ class SocietyModuleController extends Controller
     private function interestDeductAndUpdate(&$amountPaid, &$billData)
     {
         $cnt = count($billData);
-        foreach ($billData as $index => $data) {
+        // Each entry is a RUNNING balance and a payment taken from one entry is subtracted from every later
+        // one below. Looping "as $data" iterated a snapshot taken before those subtractions, so a payment
+        // bigger than the oldest unpaid entry was under-deducted and interest was charged on money that
+        // had been paid. Read the entry fresh on every pass.
+        foreach (array_keys($billData) as $index) {
+            $data = $billData[$index];
             if ($amountPaid > 0 && ($data['tax'] ?? 0) > 0) {
                 $tempTaxPaid = $amountPaid - $data['tax'];
                 if ($tempTaxPaid > 0) {
@@ -5023,7 +5230,11 @@ class SocietyModuleController extends Controller
                 $monthlyPrincipalAmt = $bd['monthly_amount'] - $bd['discount'];
 
                 $jvDebitedAmt = 0;
-                $tempPrincipal = $monthlyPrincipalAmt + $jvDebitedAmt - $bd['tax_total'] - $bd['principal_adjusted'];
+                // The tax of a bill (tax_total) is charged ON TOP of the tariff amount: monthly_amount is the tariff total
+                // WITHOUT tax and the bill's principal_balance is op_principal_arrears + monthly_principal_amount; the tax
+                // has its own bucket below. Taking tax_total out of the principal as well charged interest on the
+                // principal LESS the GST.
+                $tempPrincipal = $monthlyPrincipalAmt + $jvDebitedAmt - $bd['principal_adjusted'];
                 $principalAmt += $tempPrincipal;
 
                 $tempInterest = $bd['interest_on_due_amount'] - $bd['interest_adjusted'];
@@ -5087,6 +5298,21 @@ class SocietyModuleController extends Controller
                 }
                 $memberPaymentData = $paymentQuery->orderBy('payment_date', 'asc')->get();
 
+                // The date the new bill is generated: the boundary the interest runs up to. ($billGeneratedDateAdj
+                // below is the day before it, which is what the cycle based methods expect.)
+                $newBillDate = $billGeneratedDate;
+
+                // Due date protection: if the last bill's due date has not been crossed by the time the new bill is
+                // generated (due date on or after the new bill's date) nothing is overdue, so no interest at all.
+                if (($methodId == 1 || $methodId == 3) && $this->dueDateNotCrossed($billDueDate, $newBillDate)) {
+                    return 0;
+                }
+
+                // Credit Notes inside the window settle principal like a payment does.
+                if ($billType == 'reg') {
+                    $memberPaymentData = $this->mergeCreditNotesIntoWindow($memberPaymentData, $lastBillGeneratedDate, $newBillDate, $memberId, $sid, $memberTransfer, $fyId);
+                }
+
                 $billGeneratedDateAdj = date('Y-m-d', strtotime('-1 day', strtotime($billGeneratedDate)));
 
                 if ($memberPaymentData->isNotEmpty()) {
@@ -5124,14 +5350,14 @@ class SocietyModuleController extends Controller
                         }
 
                         if ($methodId == 1 && $index == ($paymentCount - 1)) {
-                            $paymentDate = $billGeneratedDateAdj;
+                            $paymentDate = $newBillDate; // open segment ends on the new bill's date (delayDays counts end - start)
                             $totalBal = $principalAmt + $interestAmtCalc + $taxAmount;
                             $this->setInterestData($principalAmt, $totalBal, $calculatedBillSummary);
                             $interestAmt += $this->delayDays($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDateAdj, $totalDays);
                         }
                         if ($methodId == 2 && $index == ($paymentCount - 1)) {
                             if (empty($byMonth)) { $billDueDate = $lastBillGeneratedDate; $byMonth = 1; }
-                            $paymentDate = $billGeneratedDateAdj;
+                            $paymentDate = $newBillDate; // open segment ends on the new bill's date (delayDays counts end - start)
                             $totalBal = $principalAmt + $interestAmtCalc + $taxAmount;
                             $this->setInterestData($principalAmt, $totalBal, $calculatedBillSummary);
                             $interestAmt += $this->delayMonths($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDateAdj);
@@ -5151,11 +5377,11 @@ class SocietyModuleController extends Controller
                     $totalBal = $principalAmt + $interestAmtCalc + $taxAmount;
                     $this->setInterestData($principalAmt, $totalBal, $calculatedBillSummary);
                     if ($methodId == 1) {
-                        $paymentDate = $billGeneratedDateAdj;
+                        $paymentDate = $newBillDate; // open segment ends on the new bill's date (delayDays counts end - start)
                         $interestAmt += $this->delayDays($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDateAdj, $totalDays);
                     } elseif ($methodId == 2) {
                         $billDueDate = $lastBillGeneratedDate;
-                        $paymentDate = $billGeneratedDateAdj;
+                        $paymentDate = $newBillDate; // open segment ends on the new bill's date (delayDays counts end - start)
                         $interestAmt += $this->delayMonths($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDateAdj);
                     } elseif ($methodId == 3) {
                         $interestAmt += $this->completeCycleDays($principalAmt, $totalBal, $params, $billDueDate, $paymentDate ?? '', $lastBillGeneratedDate, $billGeneratedDateAdj);
@@ -5183,15 +5409,33 @@ class SocietyModuleController extends Controller
             $interestAmtResult = $this->completeMonths($params, $lastMonthBillDetails, $billGeneratedDate);
         }
 
+        // The arrears being charged are those of the OPENING bill. What the callers pass in:
+        //   $lastBillGeneratedDate = opening bill date        $paymentDate = opening bill DUE date
+        //   $billGeneratedDate     = date of the bill being generated now (the first bill)
+        // ($billDueDate is not used: callers pass the opening bill date there). The interest period is worked out
+        // like a normal bill's: it ends the day BEFORE the new bill, and each method counts from where it starts:
+        //   Delay Days (1)                        opening due date  ->  day before the new bill
+        //   Delay Months (2), Cycle Days (3), Cycle Monthly (4)   opening bill date -> day before the new bill
+        $valid = fn ($d) => !empty($d) && $d != '0000-00-00' && strtotime($d) !== false;
+        if (!$valid($billGeneratedDate)) {
+            return ($interestAmtResult < 0) ? 0 : $interestAmtResult;
+        }
+        $periodEnd = date('Y-m-d', strtotime('-1 day', strtotime($billGeneratedDate)));
+
         $days = 0;
         if ($methodId == 1) {
-            $interestAmtResult += $this->delayDays($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDate, $days);
-        } elseif ($methodId == 2) {
-            $interestAmtResult += $this->delayMonths($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDate);
-        } elseif ($methodId == 3) {
-            $interestAmtResult += $this->completeCycleDays($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDate);
-        } elseif ($methodId == 4) {
-            $interestAmtResult += $this->completeCycleMonthly($principalAmt, $totalBal, $params, $billDueDate, $paymentDate, $lastBillGeneratedDate, $billGeneratedDate);
+            // Only the days after the due date count; due on or after the new bill's date means not late yet.
+            if ($valid($paymentDate) && strtotime($paymentDate) < strtotime($billGeneratedDate)) {
+                $interestAmtResult += $this->delayDays($principalAmt, $totalBal, $params, $paymentDate, $billGeneratedDate, $lastBillGeneratedDate, $periodEnd, $days); // days = new bill date - opening due date
+            }
+        } elseif ($valid($lastBillGeneratedDate) && strtotime($lastBillGeneratedDate) < strtotime($billGeneratedDate)) {
+            if ($methodId == 2) {
+                $interestAmtResult += $this->delayMonths($principalAmt, $totalBal, $params, $lastBillGeneratedDate, $billGeneratedDate, $lastBillGeneratedDate, $periodEnd);
+            } elseif ($methodId == 3) {
+                $interestAmtResult += $this->completeCycleDays($principalAmt, $totalBal, $params, $paymentDate, $periodEnd, $lastBillGeneratedDate, $periodEnd);
+            } elseif ($methodId == 4) {
+                $interestAmtResult += $this->completeCycleMonthly($principalAmt, $totalBal, $params, $paymentDate, $periodEnd, $lastBillGeneratedDate, $periodEnd);
+            }
         }
 
         return ($interestAmtResult < 0) ? 0 : $interestAmtResult;

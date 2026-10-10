@@ -64,6 +64,12 @@ Route::middleware('auth')->get('/admin/dashboard', function (\Illuminate\Http\Re
 
 Route::middleware(['auth', EnsureRole::class . ':Admin'])->prefix('admin')->group(function () {
 
+    // Bill Summary Monitor on the admin dashboard (JSON for the dashboard widget)
+    Route::get('/bill-monitor/months', [\App\Http\Controllers\Admin\BillMonitorController::class, 'months'])->name('admin.billMonitor.months');
+    Route::get('/bill-monitor/month', [\App\Http\Controllers\Admin\BillMonitorController::class, 'month'])->name('admin.billMonitor.month');
+    Route::get('/bill-monitor/check', [\App\Http\Controllers\Admin\BillMonitorController::class, 'check'])->name('admin.billMonitor.check');
+    Route::post('/bill-monitor/reconcile', [\App\Http\Controllers\Admin\BillMonitorController::class, 'reconcile'])->name('admin.billMonitor.reconcile');
+
     Route::get('/societies', [AdminSociety::class, 'index'])->name('admin.societies.index');
     Route::get('/societies/create/{id?}', [AdminSociety::class, 'create'])->name('admin.societies.create');
     Route::post('/societies/store', [AdminSociety::class, 'store'])->name('admin.societies.store');

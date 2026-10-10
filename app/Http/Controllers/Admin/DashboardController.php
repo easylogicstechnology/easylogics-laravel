@@ -54,7 +54,10 @@ class DashboardController extends Controller
             ->limit(5)
             ->get();
 
+        $billYears = app(\App\Services\Reports\AdminBillMonitor::class)->years();
+
         return view('admin.dashboard', compact(
+            'billYears',
             'countSocieties',
             'resellerSocietiesCount',
             'countReseller',

@@ -7,7 +7,7 @@
 
 <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px;">
     <a href="{{ route('society.downloadMemberTemplate') }}" class="btn btn-success btn-sm">&#11015; Download Sample Template File</a>
-    <a href="{{ route('society.downloadMemberOpeningBalance') }}" class="btn btn-success btn-sm">&#11015; Download Member Opening Balance</a>
+    <button type="button" class="btn btn-success btn-sm" onclick="document.getElementById('downloadOBModal').style.display='flex'">&#11015; Download Member Opening Balance</button>
     <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('uploadOBModal').style.display='flex'">&#11014; Upload Member Opening Balance</button>
     <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('uploadCSVModal').style.display='flex'">&#11014; Upload Member Identities CSV</button>
     <a href="{{ route('society.addMember') }}" class="btn btn-sm" style="background:#333;color:#fff;">+ Add Member</a>
@@ -85,6 +85,23 @@
     <div id="paginationInfo" style="margin-top:12px; font-size:13px; color:#666;"></div>
 </div>
 
+{{-- Download Opening Balance Modal: only the ticked fields are downloaded --}}
+<div id="downloadOBModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:999; align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:8px; padding:24px; width:420px; max-width:90%;">
+        <h3 style="margin-bottom:12px; font-size:16px;">Select fields to download</h3>
+        <form method="GET" action="{{ route('society.downloadMemberOpeningBalance') }}" onsubmit="if(!this.querySelector('input[name=&quot;fields[]&quot;]:checked')){alert('Please select at least one field.');return false;} document.getElementById('downloadOBModal').style.display='none'; return true;">
+            <p style="font-size:12px; color:#999; margin-bottom:12px;">Member ID and Building are always included (with Flat No, Wing and Name as reference when not ticked). Only the ticked fields are downloaded, and only those fields are updated when you upload the file back.</p>
+            @foreach (['name' => 'Member Name', 'flat' => 'Flat/Shop No', 'wing' => 'Wing Name', 'mobile' => 'Mobile No', 'email' => 'Email Address', 'area' => 'Area', 'op_principal' => 'Opening Principal', 'op_interest' => 'Opening Interest', 'op_tax' => 'Opening Tax', 'op_bill_date' => 'Opening Bill Date', 'op_bill_due_date' => 'Opening Bill Due Date'] as $key => $label)
+                <label style="display:block; margin-bottom:8px; font-size:14px;"><input type="checkbox" name="fields[]" value="{{ $key }}" checked> {{ $label }}</label>
+            @endforeach
+            <div style="display:flex; gap:8px; margin-top:12px;">
+                <button type="submit" class="btn btn-success">Download</button>
+                <button type="button" class="btn btn-sm" style="background:#999; color:#fff;" onclick="document.getElementById('downloadOBModal').style.display='none'">Close</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 {{-- Upload Opening Balance Modal --}}
 <div id="uploadOBModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:999; align-items:center; justify-content:center;">
     <div style="background:#fff; border-radius:8px; padding:24px; width:450px; max-width:90%;">
@@ -95,7 +112,7 @@
                 <label>Select CSV File</label>
                 <input type="file" name="member_csv" class="form-control" accept=".csv" required>
             </div>
-            <p style="font-size:12px; color:#999; margin-bottom:12px;">Download the template first, fill Opening Principal/Interest/Tax columns, then upload.</p>
+            <p style="font-size:12px; color:#999; margin-bottom:12px;">Download the file first (choose the fields), edit only those columns, then upload. Only the columns in the file are updated; blank cells are skipped.</p>
             <div style="display:flex; gap:8px;">
                 <button type="submit" class="btn btn-success">Upload</button>
                 <button type="button" class="btn btn-sm" style="background:#999; color:#fff;" onclick="document.getElementById('uploadOBModal').style.display='none'">Cancel</button>
