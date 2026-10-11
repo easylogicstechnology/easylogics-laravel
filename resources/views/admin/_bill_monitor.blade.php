@@ -207,6 +207,18 @@ window.BILL_MONITOR = {
                 '</td><td class="text-right" style="color:#2e7d32;">' + (un === r.societyIds.length ? '-' : num(ok)) +
                 '</td><td class="text-right" style="color:#c62828;font-weight:600;">' + (un === r.societyIds.length ? '-' : num(bad)) + '</td></tr>';
         }
+        // unique total: every society counted once, however many resellers it belongs to
+        if (rh) {
+            var uOk = 0, uBad = 0, uUn = 0;
+            for (var us = 0; us < d.societies.length; us++) {
+                var uc = d.societies[us].check;
+                if (!uc || uc.error) { uUn++; } else { uOk += uc.correct; uBad += uc.wrong; }
+            }
+            var uAll = (uUn === d.societies.length);
+            rh += '<tr style="background:#f1f1f1;font-weight:700;"><td>Unique total <span style="font-weight:400;color:#777;font-size:11px;">(each society once; ' + num(d.resellerCount) + ' resellers)</span></td><td class="text-right">' + num(d.totalSocieties) +
+                '</td><td class="text-right">' + num(d.totalBills) + '</td><td class="text-right" style="color:#2e7d32;">' + (uAll ? '-' : num(uOk)) +
+                '</td><td class="text-right" style="color:#c62828;">' + (uAll ? '-' : num(uBad)) + '</td></tr>';
+        }
         $('bm_resellers').innerHTML = rh || '<tr><td colspan="5">No bills in this month</td></tr>';
 
         // society-wise
@@ -225,10 +237,14 @@ window.BILL_MONITOR = {
             }
             var btn = (ch && !ch.error && ch.wrong > 0) ? '<a href="#" class="bm_toggle" data-id="' + so.id + '">' + (state.open[so.id] ? 'Hide' : 'Errors') + '</a> &nbsp;' : '';
             btn += '<a href="#" class="bm_one" data-id="' + so.id + '">' + (ch ? 'Re-check' : 'Check') + '</a> &nbsp;<a href="#" class="bm_recon_open" data-id="' + so.id + '">' + (state.recon[so.id] && state.recon[so.id].open ? 'Close reconcile' : 'Reconcile') + '</a>';
-            sh += '<tr><td>' + n + '</td><td>' + esc(so.name) + '</td><td>' + (so.resellers.length ? esc(so.resellers.join(', ')) : '<span style="color:#999;">Direct</span>') +
+            sh += '<tr><td>' + n + '</td><td><a href="#" class="bm_soc" data-id="' + so.id + '" style="font-weight:600;">' + esc(so.name) + '</a></td><td>' + (so.resellers.length ? esc(so.resellers.join(', ')) : '<span style="color:#999;">Direct</span>') +
                 '</td><td class="text-right">' + num(so.bills) + '</td><td>' + status + '</td><td style="white-space:nowrap;">' + btn + '</td></tr>';
             if (state.recon[so.id] && state.recon[so.id].open) { sh += reconPanel(so); }
             if (state.open[so.id] && ch && ch.rows) {
+                if (!ch.rows.length) {
+                    sh += '<tr><td></td><td colspan="5"><div style="border:1px solid #ccc;background:#f4fbf5;padding:8px;text-align:center;color:#2e7d32;">Bill Summary Update: no mismatched records - everything matches the ledger.</div></td></tr>';
+                    continue;
+                }
                 sh += '<tr><td></td><td colspan="5"><table class="table table-bordered" style="width:100%;font-size:11px;margin:0;background:#fffbe6;"><thead><tr><th>Flat</th><th>Member</th><th class="text-right">Closing (calculated)</th><th class="text-right">Opening (last bill)</th><th class="text-right">Difference</th></tr></thead><tbody>';
                 for (var w = 0; w < ch.rows.length; w++) {
                     var rw = ch.rows[w];
@@ -334,6 +350,27 @@ window.BILL_MONITOR = {
             go(r.members.map(function (m) { return String(m.id); }));
         });
     }
+    // loads the society's member list only (no scan), so the tick-boxes show as soon as a society is opened
+    function reconLoadList(socId) {
+        var r = reconState(socId);
+        if (r.members || r.busy) { return; }
+        r.busy = true; r.status = '<div style="color:#555;">Loading members...</div>'; render();
+        post(C.reconcile, { society_id: socId, fy: state.fy, list: 1 }, function (resp) {
+            r.busy = false; r.status = '';
+            if (resp && resp.success) { r.members = resp.members; } else { r.status = '<div style="color:#a94442;">Could not load members</div>'; }
+            render();
+        });
+    }
+    // clicking a society: its Bill Summary Update table and its Member Balance Reconciliation
+    function openSociety(socId) {
+        var rs = reconState(socId), show = !(state.open[socId] && rs.open);
+        state.open[socId] = show; rs.open = show;
+        render();
+        if (!show) { return; }
+        var ch = findSociety(socId).check;
+        if (!ch || ch.error) { checkOne(socId, !!ch, function () {}); }
+        reconLoadList(socId);
+    }
     function reconApply(socId) {
         var r = reconState(socId), ids = checkedIds(r).map(String);
         if (!ids.length) { return; }
@@ -413,6 +450,7 @@ window.BILL_MONITOR = {
         } else if (a.className === 'bm_r_cb') {
             reconState(rid).checked[a.value] = a.checked; return;
         }
+        if (a.className === 'bm_soc') { e.preventDefault(); openSociety(rid); return; }
         if (a.className === 'bm_toggle') {
             e.preventDefault(); var id = a.getAttribute('data-id'); state.open[id] = !state.open[id]; render();
         } else if (a.className === 'bm_one') {

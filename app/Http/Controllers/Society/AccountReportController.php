@@ -1276,8 +1276,8 @@ class AccountReportController extends Controller
     {
         $q = $this->memberBillQuery($request);
         $data = (new MemberBillPrintReport($this->societyId(), $this->fyId()))->run($q);
-        // CakePHP: "English" picks the English words, anything else (also nothing) the Marathi ones
-        $words = ($q['words_type'] ?? null) == 'English'
+        // CakePHP: "English" - and now also nothing sent (the single-bill Print Bill / Download PDF) - picks the English words, anything else the Marathi ones
+        $words = (!isset($q['words_type']) || $q['words_type'] == 'English')
             ? fn ($n) => \App\Support\BillWords::english($n)
             : fn ($n) => \App\Support\BillWords::marathi($n);
 
@@ -1291,6 +1291,35 @@ class AccountReportController extends Controller
 
         return $this->legacyView('society.reports.member-bill-print', $this->memberBillData($request) + [
             'pdfUrl' => route('society.printMemberBillsPdf', $request->query()),
+        ]);
+    }
+
+    /**
+     * "Print Bill" / "Download PDF" at the bottom of the bill window (CakePHP society_bills/bill_pdf): ONE bill
+     * (?bill_id=, current or previous owner) as a PDF that opens in the browser's own PDF viewer (inline, not a
+     * download) so the person looks at the bill and prints it from there; ?download=1 saves it as a file instead.
+     * Same data and PDF template as the "Export to PDF" of the bill print screen.
+     */
+    public function billPdf(Request $request)
+    {
+        @set_time_limit(300);
+        if (!$request->query('bill_id')) {
+            abort(404, 'Bill not found.');
+        }
+        $data = $this->memberBillData($request);
+        if (empty($data['printBillDetails'])) {
+            abort(404, 'Bill not found.');
+        }
+        $first = reset($data['printBillDetails']);
+        $billNo = preg_replace('/[^0-9A-Za-z_-]/', '', (string) ($first['MemberBillSummary']['bill_no'] ?? ''));
+        $fileName = 'Bill_' . ($billNo !== '' ? $billNo : date('Ymd_His')) . '.pdf';
+
+        $html = $this->legacyView('society.reports.member-bill-pdf', $data)->getContent();
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadHTML($html)->output();
+
+        return response($pdf, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => ($request->query('download') ? 'attachment' : 'inline') . '; filename="' . $fileName . '"',
         ]);
     }
 

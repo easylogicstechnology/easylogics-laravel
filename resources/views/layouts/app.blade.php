@@ -691,7 +691,8 @@ function renderOldMemberLedger(resp) {
         for (var i = 0; i < resp.memberBillPayment.length; i++) {
             var e = resp.memberBillPayment[i];
             indBalance = f(indBalance) + f(e.debit) - f(e.credit);
-            tb.innerHTML += '<tr><td>' + (e.formattedDate || '') + '</td><td>' + (e.particular || '') + '</td><td class="text-right old_dr">' + f(e.debit).toFixed(2) + '</td><td class="text-right old_cr">' + f(e.credit).toFixed(2) + '</td><td class="text-right">' + Math.abs(indBalance).toFixed(2) + ' ' + np(indBalance) + '</td></tr>';
+            var particularHtml = (e.flag === 'bill' && e.bill_id) ? '<a href="javascript:void(0);" onclick="loadBillModalFromFlatShop(' + parseInt(e.bill_id, 10) + ',' + parseInt(e.month, 10) + ');">' + (e.particular || '') + '</a>' : (e.particular || '');
+            tb.innerHTML += '<tr><td>' + (e.formattedDate || '') + '</td><td>' + particularHtml + '</td><td class="text-right old_dr">' + f(e.debit).toFixed(2) + '</td><td class="text-right old_cr">' + f(e.credit).toFixed(2) + '</td><td class="text-right">' + Math.abs(indBalance).toFixed(2) + ' ' + np(indBalance) + '</td></tr>';
         }
     }
     var td = 0, tc = 0;
@@ -910,6 +911,20 @@ function getAllMembersBillSummaryDetails(postStr) {
 function loadBillModalFromFlatShop(billId, month) {
     openModal('billModal');
     getAllMembersBillSummaryDetails('id=' + billId + '&month=' + month);
+}
+
+// Print Bill (bottom of the bill window): ONE bill - current or previous owner - as a PDF that opens in the browser's
+// own PDF viewer (not a download); the person looks at the bill and prints it from there.
+function printSingleBill() {
+    var billId = document.getElementById('society_member_summary_id').value;
+    if (!billId) return;
+    window.open('/society/bill-pdf?bill_id=' + encodeURIComponent(billId), '_blank');
+}
+// Download PDF: the same bill saved as a file instead of opened.
+function downloadSingleBill() {
+    var billId = document.getElementById('society_member_summary_id').value;
+    if (!billId) return;
+    window.location.href = '/society/bill-pdf?download=1&bill_id=' + encodeURIComponent(billId);
 }
 
 function societyMemberBillPrevious() {

@@ -38,12 +38,7 @@ class JournalVoucherRegisterReport
         if ($vouchers) {
             // Name the member carried at the time of an old (pre-transfer) voucher
             $old = [];
-            $oldRows = DB::select(
-                'select third_member, member_id, flat_no from member_identifications where id in ('
-                . 'select max(id) from member_identifications where member_id in ('
-                . 'SELECT id FROM `members` where member_transfer > 0 and society_id = ? and status = 1) group by member_id)',
-                [$this->societyId]
-            );
+            $oldRows = \App\Support\OldMembers::forSociety((int) $this->societyId);
             foreach ($oldRows as $r) {
                 if (!empty($r->member_id) && isset($r->third_member)) {
                     $old[$r->member_id] = $r->third_member;

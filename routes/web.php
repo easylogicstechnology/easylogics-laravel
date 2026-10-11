@@ -64,7 +64,8 @@ Route::middleware('auth')->get('/admin/dashboard', function (\Illuminate\Http\Re
 
 Route::middleware(['auth', EnsureRole::class . ':Admin'])->prefix('admin')->group(function () {
 
-    // Bill Summary Monitor on the admin dashboard (JSON for the dashboard widget)
+    // Bill Summary Update (Admin > Reports): the Bill Summary Monitor page and its JSON calls
+    Route::get('/reports/bill-summary-update', [\App\Http\Controllers\Admin\BillMonitorController::class, 'page'])->name('admin.reports.billSummaryUpdate');
     Route::get('/bill-monitor/months', [\App\Http\Controllers\Admin\BillMonitorController::class, 'months'])->name('admin.billMonitor.months');
     Route::get('/bill-monitor/month', [\App\Http\Controllers\Admin\BillMonitorController::class, 'month'])->name('admin.billMonitor.month');
     Route::get('/bill-monitor/check', [\App\Http\Controllers\Admin\BillMonitorController::class, 'check'])->name('admin.billMonitor.check');
@@ -390,5 +391,7 @@ Route::middleware(['auth', EnsureRole::class . ':Society'])->prefix('society')->
     Route::get('/bill-with-receipt-tabular', [\App\Http\Controllers\Society\AccountReportController::class, 'billWithReceiptTabular'])->name('society.billWithReceiptTabular');
     Route::get('/bill-with-receipt-tabular/print', [\App\Http\Controllers\Society\AccountReportController::class, 'printMemberBills'])->name('society.printMemberBills');
     Route::get('/bill-with-receipt-tabular/pdf', [\App\Http\Controllers\Society\AccountReportController::class, 'printMemberBillsPdf'])->name('society.printMemberBillsPdf');
+    // One bill as a PDF (the bill window's Print Bill = inline, Download PDF = ?download=1)
+    Route::get('/bill-pdf', [\App\Http\Controllers\Society\AccountReportController::class, 'billPdf'])->name('society.billPdf');
     Route::get('/bill-receipt', [SocietyModuleController::class, 'billReceipt'])->name('society.billReceipt');
 });

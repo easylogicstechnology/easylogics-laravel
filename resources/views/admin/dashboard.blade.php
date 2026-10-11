@@ -102,5 +102,4 @@
     </div>
 </div>
 
-@include('admin._bill_monitor')
 @endsection

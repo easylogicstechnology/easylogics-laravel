@@ -2918,14 +2918,12 @@ class SocietyModuleController extends Controller
     // Ported from Cake SocietyBillsController::delete_all_bills_payments(), with a
     // 'delete_type' dropdown added on top of Cake's single always-delete-everything
     // button:
-    //   'both'    - Cake's original behavior: bill_generates + bill_summaries +
-    //               payments + journal_vouchers in range, plus the FY's
-    //               MemberIdentification wipe (Cake's own comment says that wipe
-    //               ignores the date range - kept exactly, tied to 'both' and
-    //               'bill' since identifications describe the billing/transfer
-    //               cycle, not receipts).
-    //   'bill'    - only bill_generates + bill_summaries (+ identifications) in
-    //               range; payments and journal vouchers are left untouched.
+    //   'both'    - bill_generates + bill_summaries + payments + journal_vouchers in
+    //               range. (Cake also wiped the FY's MemberIdentification here,
+    //               ignoring the date range; that wipe destroyed the transfer
+    //               records and has been removed - in Cake too.)
+    //   'bill'    - only bill_generates + bill_summaries in range; payments and
+    //               journal vouchers are left untouched.
     //   'receipt' - only payments in range; bills, journal vouchers and
     //               identifications are left untouched.
     public function deleteAllBillsAndPayments(Request $request)
@@ -2958,8 +2956,10 @@ class SocietyModuleController extends Controller
             ->count();
 
         if ($deleteType === 'both' || $deleteType === 'bill') {
-            MemberIdentification::where('society_id', $societyId)->where('financial_year_id', $fyId)->delete();
-
+            // NOT deleted any more: the MemberIdentification (transfer) records. They are the only place that keeps
+            // WHO the previous owner was and when the unit was transferred, while members.member_transfer stays >= 1 -
+            // wiping them here (whatever date range was chosen, even when no bill matched) left every transferred unit
+            // of the society with a transfer count but no record of it. (Cake fix, SocietyBillsController.)
             MemberBillGenerate::where('society_id', $societyId)->where('financial_year_id', $fyId)
                 ->whereBetween('bill_generated_date', [$fromDate, $toDate])->delete();
 
@@ -3407,13 +3407,8 @@ class SocietyModuleController extends Controller
         // Port of SocietyBillComponent::getSocietyOldMeberFlatList() - the most
         // recent member_identifications row (by id) for every member who has a
         // transfer history (member_transfer > 0), i.e. the previous owner's name.
-        return DB::select('
-            select third_member, member_id, flat_no from member_identifications where id in (
-                select max(id) from member_identifications where member_id in (
-                    select id from members where member_transfer > 0 and society_id = ? and status = 1
-                ) group by member_id
-            )
-        ', [$societyId]);
+        // (now also lists transferred units that have no identification row - see App\Support\OldMembers)
+        return \App\Support\OldMembers::forSociety((int) $societyId);
     }
 
     private function jvLedgerHeadList($societyId)
@@ -3885,11 +3880,18 @@ class SocietyModuleController extends Controller
         }
 
         $memberTransfer = $member->member_transfer ?? 0;
+        $isOldMemberView = false;
+        $oldIdent = null;
 
         if ($oldMember == 1 && $memberTransfer >= 1) {
+            $isOldMemberView = true;
             $memberTransfer = $memberTransfer - 1;
+            // Show the previous owner's name, not the current occupant's. Filter by member_transfer too - a member
+            // transferred more than once has one MemberIdentification row per transfer, and without this filter
+            // the lookup could pick a different generation's snapshot.
             $oldIdent = MemberIdentification::where('member_id', $memberId)
                 ->where('society_id', $sid)
+                ->where('member_transfer', $memberTransfer)
                 ->orderBy('flat_no')
                 ->first();
             if ($oldIdent && !empty($oldIdent->third_member)) {
@@ -3907,12 +3909,6 @@ class SocietyModuleController extends Controller
         $building = Building::find($member->building_id);
         $wing = Wing::find($member->wing_id);
 
-        $prevYearId = $fyId - 1;
-        $closingData = DB::table('member_year_wise_closing_balance')
-            ->where('member_id', $memberId)
-            ->where('year_id', $prevYearId)
-            ->get();
-
         $opPrincipal = $member->op_principal ?? 0;
         $opInterest = $member->op_interest ?? 0;
         $opTax = $member->op_tax ?? 0;
@@ -3920,22 +3916,37 @@ class SocietyModuleController extends Controller
         $supInterest = $member->supplementary_interest ?? 0;
         $supTax = $member->supplementary_tax ?? 0;
 
-        foreach ($closingData as $cd) {
-            if ($cd->bill_type == 'reg') {
-                $opPrincipal = $cd->principal_balance ?: 0;
-                $opInterest = $cd->interest_balance ?: 0;
-                $opTax = $cd->tax_balance ?: 0;
-            } elseif ($cd->bill_type == 'sup') {
-                $supPrincipal = $cd->principal_balance ?: 0;
-                $supInterest = $cd->interest_balance ?: 0;
-                $supTax = $cd->tax_balance ?: 0;
+        if ($isOldMemberView) {
+            // The previous owner's opening is only kept on their own MemberIdentification snapshot: the closing
+            // rows belong to whichever owner is active now, not to this old owner.
+            $opPrincipal = !empty($oldIdent->op_principal) ? $oldIdent->op_principal : 0;
+            $opInterest = !empty($oldIdent->op_interest) ? $oldIdent->op_interest : 0;
+            $opTax = !empty($oldIdent->op_tax) ? $oldIdent->op_tax : 0;
+        } else {
+            // (a transferred unit's new owner does not inherit the old owner's closing row - see MemberClosing)
+            $closingData = \App\Support\MemberClosing::rowsForOpening((int) $memberId, (int) $memberTransfer, (int) $fyId);
+
+            foreach ($closingData as $cd) {
+                if ($cd->bill_type == 'reg') {
+                    $opPrincipal = $cd->principal_balance ?: 0;
+                    $opInterest = $cd->interest_balance ?: 0;
+                    $opTax = $cd->tax_balance ?: 0;
+                } elseif ($cd->bill_type == 'sup') {
+                    $supPrincipal = $cd->principal_balance ?: 0;
+                    $supInterest = $cd->interest_balance ?: 0;
+                    $supTax = $cd->tax_balance ?: 0;
+                }
             }
         }
 
+        // The old (pre-transfer) owner is done and gone: their bills/receipts were generated under a transfer
+        // number that will never be reused, so their ledger can span several financial years. Everything is read
+        // here and cut down to the selected year below (earlier years only feed the opening balance); the current
+        // occupant stays scoped to the selected year.
         $bills = MemberBillSummary::where('society_id', $sid)
             ->where('member_id', $memberId)
             ->where('member_transfer', $memberTransfer)
-            ->where('financial_year_id', $fyId)
+            ->when(!$isOldMemberView, fn ($q) => $q->where('financial_year_id', $fyId))
             ->orderBy('id')
             ->get();
 
@@ -3943,7 +3954,7 @@ class SocietyModuleController extends Controller
             ->where('society_id', $sid)
             ->where('member_id', $memberId)
             ->where('member_transfer', $memberTransfer)
-            ->where('financial_year_id', $fyId)
+            ->when(!$isOldMemberView, fn ($q) => $q->where('financial_year_id', $fyId))
             ->orderBy('id')
             ->get();
 
@@ -3981,13 +3992,14 @@ class SocietyModuleController extends Controller
                 'flag' => 'bill',
                 'bill_id' => $bill->id,
                 'month' => $bill->month,
+                'financial_year_id' => $bill->financial_year_id,
             ];
 
             foreach ($payments as $payment) {
                 if (in_array($payment->id, $noPaymentIdsArr)) continue;
                 $billType = ($payment->bill_type == 'sup') ? ' - supplementary' : '';
                 $chq = '';
-                if (!empty($payment->cheque_reference_number)) {
+                if (((string) ($payment->cheque_reference_number ?? '') !== '')) {
                     $chq = ' and Cheque Reference Number ' . $payment->cheque_reference_number;
                 }
                 $noPaymentIdsArr[] = $payment->id;
@@ -4001,7 +4013,7 @@ class SocietyModuleController extends Controller
                     'payment_id' => $payment->id,
                 ];
 
-                if (!empty($chequeReturns) && !empty($payment->cheque_reference_number)) {
+                if (!empty($chequeReturns) && ((string) ($payment->cheque_reference_number ?? '') !== '')) {
                     foreach ($chequeReturns as $chData) {
                         if ($chData->cheque_no == $payment->cheque_reference_number && $chData->payment_id == $payment->id) {
                             $ledgerEntries[] = [
@@ -4027,12 +4039,12 @@ class SocietyModuleController extends Controller
                     ->where('member_id', $memberId)
                     ->whereIn('id', $filteredIds)
                     ->where('member_transfer', $memberTransfer)
-                    ->where('financial_year_id', $fyId)
+                    ->when(!$isOldMemberView, fn ($q) => $q->where('financial_year_id', $fyId))
                     ->get();
                 foreach ($extraPayments as $payment) {
                     $billType = ($payment->bill_type == 'sup') ? ' supplementary' : '';
                     $chq = '';
-                    if (!empty($payment->cheque_reference_number)) {
+                    if (((string) ($payment->cheque_reference_number ?? '') !== '')) {
                         $chq = ' and Cheque Reference Number ' . $payment->cheque_reference_number;
                     }
                     $ledgerEntries[] = [
@@ -4045,7 +4057,7 @@ class SocietyModuleController extends Controller
                         'payment_id' => $payment->id,
                     ];
 
-                    if (!empty($chequeReturns) && !empty($payment->cheque_reference_number)) {
+                    if (!empty($chequeReturns) && ((string) ($payment->cheque_reference_number ?? '') !== '')) {
                         foreach ($chequeReturns as $chData) {
                             if ($chData->cheque_no == $payment->cheque_reference_number && $chData->payment_id == $payment->id) {
                                 $ledgerEntries[] = [
@@ -4103,6 +4115,56 @@ class SocietyModuleController extends Controller
 
         $yearStartDate = session('fy.year_start_date', date('Y') . '-04-01');
         $openingDate = date('d/m/Y', strtotime($yearStartDate));
+
+        if ($isOldMemberView) {
+            // The "Opening Balance" row belongs at the start of the old owner's FIRST bill. When no snapshot opening
+            // was kept for them (MemberIdentification op_* empty) the balance they started with is what their first
+            // regular bill carried in (op_due_amount = arrears brought forward): without this the row showed 0.00 and
+            // the receipts that settled those arrears looked like an over-payment.
+            $firstOldBill = $bills->first(fn ($b) => $b->bill_type == 'reg') ?? $bills->first();
+            if ($firstOldBill) {
+                $snapshotOpening = abs((float) $opPrincipal) + abs((float) $opInterest) + abs((float) $opTax);
+                if ($snapshotOpening < 0.005 && abs((float) $firstOldBill->op_due_amount) >= 0.005) {
+                    $firstInterest = (float) $firstOldBill->op_interest_arrears;
+                    $firstTax = (float) $firstOldBill->op_tax_arrears;
+                    $opInterest = $firstInterest;
+                    $opTax = $firstTax;
+                    $opPrincipal = round((float) $firstOldBill->op_due_amount - $firstInterest - $firstTax, 2);
+                }
+            }
+
+            // Year-wise: only the financial year the user is logged in to is listed. Everything the old owner did
+            // BEFORE that year is folded into the Opening Balance row (their first opening + earlier bills -
+            // earlier receipts), so the opening is the balance at the start of THIS year and the closing still
+            // agrees with the old owner's last bill.
+            $fyStartDate = session('fy.year_start_date');
+            $fyEndDate = session('fy.year_end_date');
+            if (!empty($fyStartDate) && !empty($fyEndDate)) {
+                $fyStart = strtotime($fyStartDate);
+                $fyEnd = strtotime($fyEndDate . ' 23:59:59');
+                $carry = (float) $opPrincipal + (float) $opInterest + (float) $opTax;
+                $thisYear = [];
+                foreach ($ledgerEntries as $entry) {
+                    $entryTime = strtotime($entry['date']);
+                    if ($entryTime < $fyStart) {
+                        $carry += (float) $entry['debit'] - (float) $entry['credit'];
+                    } elseif ($entryTime <= $fyEnd) {
+                        $thisYear[] = $entry;
+                    }
+                }
+                $opPrincipal = round($carry, 2);
+                $opInterest = 0;
+                $opTax = 0;
+                // the member row's supplementary opening belongs to the CURRENT owner
+                $supPrincipal = 0;
+                $supInterest = 0;
+                $supTax = 0;
+                $ledgerEntries = $thisYear;
+                $openingDate = date('d/m/Y', $fyStart);
+            } elseif ($firstOldBill) {
+                $openingDate = date('d/m/Y', strtotime($firstOldBill->bill_generated_date));
+            }
+        }
 
         $memberTransfered = MemberIdentification::where('member_id', $memberId)->exists();
 

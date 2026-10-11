@@ -11,7 +11,7 @@
     }
     $accountOptions .= '</optgroup><optgroup label="Society Old Members List">';
     foreach ($oldMemberRows as $old) {
-        $accountOptions .= '<option value="member-' . (int) $old->member_id . '-old">' . e($old->third_member . ' -- ' . $old->flat_no) . '</option>';
+        $accountOptions .= '<option value="member-' . (int) $old->member_id . '-old">' . e($old->third_member . ' -- ' . $old->flat_no . ' (Old Member)') . '</option>';
     }
     $accountOptions .= '</optgroup><optgroup label="Society Ledger List">';
     foreach ($ledgerList as $ledgerId => $ledgerName) {
@@ -159,6 +159,7 @@
         <select class="form-control dcn-type" name="DebitCreditNote[type][]"><option value="Debit">Debit</option><option value="Credit">Credit</option></select>
     </div>
     <div class="dcn-c4">
+        <input type="text" class="form-control dcn-account-search" placeholder="Search member / flat / ledger..." autocomplete="off" style="margin-bottom:4px;">
         <select class="form-control dcn-account" name="DebitCreditNote[account][]">{!! $accountOptions !!}</select>
         <div class="dcn-bill-info"></div>
     </div>
@@ -176,7 +177,31 @@
 (function ($) {
     var latestBillUrl = @json(url('/society/debit-credit-notes/latest-bill'));
     var billCache = {};
+    var accountMasterHtml = @json($accountOptions);
     function num(v) { var n = parseFloat(v); return isNaN(n) ? 0 : n; }
+
+    // Search box above the Account Name list: type part of a member name, flat no. or ledger name
+    // (several words allowed, any order) and the list below shrinks to the matches. It filters the
+    // same plain <select> - nothing else on the row changes, and the choice already made stays in the list.
+    function filterAccounts($row) {
+        var $sel = $row.find('.dcn-account');
+        var words = $.trim($row.find('.dcn-account-search').val()).toLowerCase().split(/\s+/).filter(Boolean);
+        var current = $sel.val();
+        $sel.html(accountMasterHtml);
+        if (words.length) {
+            $sel.find('option').each(function () {
+                var $o = $(this), text = $o.text().toLowerCase();
+                if ($o.val() === '' || $o.val() === current) { return; }
+                for (var i = 0; i < words.length; i++) { if (text.indexOf(words[i]) === -1) { $o.remove(); return; } }
+            });
+            $sel.find('optgroup').each(function () { if (!$(this).children().length) { $(this).remove(); } });
+        }
+        $sel.val(current);
+        // show the matches as an open list so one click picks it (a closed <select> needs two); the
+        // placeholder and the group headings take a line each, so they count towards the height
+        var lines = $sel.find('option').length + $sel.find('optgroup').length;
+        $sel.attr('size', words.length ? Math.min(Math.max(lines, 3), 9) : 1);
+    }
     function addRow() {
         var $row = $($('#dcn-row-tpl').html());
         $('#dcn-rows').append($row);
@@ -237,6 +262,26 @@
         $rows.eq(0).find('.dcn-type').val(first); $rows.eq(1).find('.dcn-type').val(second);
         $rows.each(function () { syncRow($(this)); });
     }
+    $(document).on('input keyup', '.dcn-account-search', function (e) {
+        if (e.type === 'keyup' && (e.which === 13 || e.which === 27)) { return; }
+        filterAccounts($(this).closest('.dcn-row'));
+    });
+    $(document).on('keydown', '.dcn-account-search', function (e) {
+        var $row = $(this).closest('.dcn-row'), $sel = $row.find('.dcn-account');
+        if (e.which === 13) { // Enter: take the first match
+            e.preventDefault();
+            var $first = $sel.find('option').filter(function () { return $(this).val() !== ''; }).first();
+            if ($first.length) { $sel.val($first.val()).trigger('change'); }
+        } else if (e.which === 27) { // Esc: clear the search
+            $(this).val(''); filterAccounts($row);
+        }
+    });
+    // once an account is picked the list goes back to a normal dropdown and the search box clears
+    $(document).on('change', '.dcn-account', function () {
+        var $row = $(this).closest('.dcn-row');
+        $row.find('.dcn-account-search').val('');
+        filterAccounts($row);
+    });
     $(document).on('change', '.dcn-type', function () { syncRow($(this).closest('.dcn-row')); });
     $(document).on('change', '.dcn-account, .dcn-adjust', function () { refreshInfo($(this).closest('.dcn-row')); });
     $(document).on('input change keyup', '.dcn-debit, .dcn-credit', updateTotals);

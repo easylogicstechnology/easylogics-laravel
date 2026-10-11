@@ -127,10 +127,10 @@ class AllGeneratedBillsTest extends TestCase
             'amount' => 100, 'bill_number' => self::TEST_NO, 'bill_generated_date' => self::TEST_DATE,
             'cdate' => now(), 'financial_year_id' => self::FY,
         ]);
-        // deleteSocietyMemberIdentifications() wipes every identification row for
-        // society+CURRENT SESSION FY unconditionally (no date-range or bill_no scoping - see
-        // the controller's own comment), so this has to be seeded at the real current FY (21)
-        // to be in scope; tracked by its own id rather than a marker field.
+        // Deleting bills used to wipe every identification (transfer) row of society+CURRENT SESSION FY,
+        // whatever the date range - leaving transferred units with a transfer count but no record of the
+        // transfer. It no longer does: seeded at the real current FY it must SURVIVE the delete (tracked by its
+        // own id rather than a marker field, and removed again in the finally block).
         $identificationId = DB::table('member_identifications')->insertGetId([
             'society_id' => self::SOCIETY, 'financial_year_id' => self::FY, 'member_transfer' => 0,
         ]);
@@ -153,7 +153,8 @@ class AllGeneratedBillsTest extends TestCase
             $this->assertSame(0, DB::table('member_payments')->where('society_id', self::SOCIETY)->where('receipt_id', self::TEST_NO)->count());
             $this->assertSame(0, DB::table('journal_vouchers')->where('society_id', self::SOCIETY)->where('voucher_no', self::TEST_NO)->count());
             $this->assertSame(0, DB::table('member_bill_generates')->where('society_id', self::SOCIETY)->where('bill_number', self::TEST_NO)->count());
-            $this->assertSame(0, DB::table('member_identifications')->where('id', $identificationId)->count());
+            // the transfer record is NOT deleted together with the bills
+            $this->assertSame(1, DB::table('member_identifications')->where('id', $identificationId)->count());
 
             // Untouched: the real bill outside the 2099 range.
             $this->assertSame(1, DB::table('member_bill_summaries')->where('id', $survivorId)->count());

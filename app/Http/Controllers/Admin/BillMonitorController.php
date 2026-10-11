@@ -8,6 +8,12 @@ use Illuminate\Http\Request;
 
 class BillMonitorController extends Controller
 {
+    /** Admin > Reports > Bill Summary Update: the Bill Summary Monitor page (it used to sit on the Admin dashboard). */
+    public function page(AdminBillMonitor $monitor)
+    {
+        return view('admin.reports.billSummaryUpdate', ['billYears' => $monitor->years()]);
+    }
+
     /** Month-by-month totals of a financial year. */
     public function months(Request $request, AdminBillMonitor $monitor)
     {
