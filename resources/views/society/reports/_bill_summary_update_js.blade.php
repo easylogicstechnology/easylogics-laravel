@@ -1,5 +1,8 @@
 {{-- Carried over from CakePHP app/View/AccountReports/comparison_2018closing_2019opening.ctp lines 181-421: only the helper calls changed --}}
 <script type="text/javascript">
+// This partial is rendered BEFORE the layout loads jQuery (at the end of the page), so the handlers are bound once
+// the page has loaded - otherwise "jQuery is not defined" and the All button / Update Bill never work.
+document.addEventListener('DOMContentLoaded', function () {
 jQuery(function ($) {
     function updateSelectedCount() {
         var checked = $('.mismatch-checkbox:checked').length;
@@ -65,6 +68,7 @@ jQuery(function ($) {
             }
         });
     });
+});
 });
 </script>
 <script type="text/javascript">

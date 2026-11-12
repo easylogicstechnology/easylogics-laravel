@@ -382,6 +382,9 @@
                 <button id="currentBillUpdateMemSum" type="button" class="btn btn-success btn-sm" style="display:none;" title="Recalculates only this current/latest bill using the latest parameters. Never changes previous bills." onclick="updateCurrentMemberBillSummaryById();">Current Bill Update</button>
                 <span id="historicalBillLockedLabel" class="label label-default" style="display:none; padding:6px 10px;">Historical bill - locked</span>
                 <button id="delMemSum" type="button" class="btn btn-danger btn-sm" onclick="deleteMemberBillSummaryById();" ifpayment="0" style="display:none;">Delete</button>
+                {{-- the buttons' ids must NOT equal the function names: inside a <form> an inline onclick finds the form control with that id before the global function ("printSingleBill is not a function") --}}
+                <button id="bill_window_print_btn" type="button" class="btn btn-success btn-sm" title="Open this bill as a PDF (print from there)" onclick="printSingleBill();"><i class="fa fa-print"></i> Print Bill</button>
+                <button id="bill_window_download_btn" type="button" class="btn btn-success btn-sm" title="Download this bill as a PDF" onclick="downloadSingleBill();"><i class="fa fa-download"></i> Download PDF</button>
                 <button type="button" class="btn btn-success btn-sm" onclick="closeModal('billModal');">Cancel</button>
                 <button id="updateManualSum" type="button" class="btn btn-warning btn-sm" style="display:none;" onclick="updateManualInterest();">Manual Update Interest</button>
             </center>

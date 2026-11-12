@@ -15,6 +15,7 @@
         <div class="menu-label menu-toggle"><span><i class="fa fa-bar-chart"></i>Reports</span> <span class="caret-icon">&#9656;</span></div>
         <div class="submenu">
             <a href="{{ route('admin.reports.trialBalanceDiff') }}" class="{{ request()->routeIs('admin.reports.trialBalanceDiff') ? 'active' : '' }}">Trial Balance Diff Report</a>
+            <a href="{{ route('admin.reports.billSummaryUpdate') }}" class="{{ request()->routeIs('admin.reports.billSummaryUpdate') ? 'active' : '' }}">Bill Summary Update</a>
             <a href="{{ route('admin.reports.resellerSociety') }}" class="{{ request()->routeIs('admin.reports.resellerSociety') ? 'active' : '' }}">Reseller Society Report</a>
             <a href="{{ route('admin.reports.resellerPayments') }}" class="{{ request()->routeIs('admin.reports.resellerPayments') ? 'active' : '' }}">Reseller Payments</a>
             <a href="{{ route('admin.reports.resellerPlans') }}" class="{{ request()->routeIs('admin.reports.resellerPlans*') ? 'active' : '' }}">Reseller Plans</a>

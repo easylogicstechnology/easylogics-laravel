@@ -59,13 +59,7 @@ class DebitCreditNoteController extends Controller
     /** the previous owner's most recent member_identifications row of every member with a transfer history */
     private function oldMemberRows(int $societyId): array
     {
-        return DB::select('
-            select third_member, member_id, flat_no from member_identifications where id in (
-                select max(id) from member_identifications where member_id in (
-                    select id from members where member_transfer > 0 and society_id = ? and status = 1
-                ) group by member_id
-            )
-        ', [$societyId]);
+        return \App\Support\OldMembers::forSociety($societyId);
     }
 
     /**
@@ -457,7 +451,8 @@ class DebitCreditNoteController extends Controller
                 if ($left > 0) {
                     $outstanding = array_sum($remaining[$r['id']]);
 
-                    return ['error' => "Row $n: the credit is more than the member's outstanding balance on the latest bill (" . number_format($outstanding / 100, 2) . ').'];
+                    return ['error' => "Row $n: the credit is more than the member's outstanding balance on the latest bill (" . number_format($outstanding / 100, 2) . ').'
+                        . ($t >= 1 ? ' This unit was transferred - to credit the previous owner, choose the entry marked "(Old Member)" in the Society Old Members List.' : '')];
                 }
             }
 
@@ -777,6 +772,16 @@ class DebitCreditNoteController extends Controller
 
         $ledgerTitles = SocietyLedgerHead::where('society_id', $societyId)->pluck('title', 'id')->all();
 
+        // Which owner a member row means: a row posted under an earlier transfer number is the PREVIOUS owner
+        // (named from the transfer record, or from the member record when none was saved); a row of a
+        // transferred unit under its current number is the NEW owner. Units never transferred stay as they were.
+        $oldOwnerNames = [];
+        foreach ($this->oldMemberRows($societyId) as $oldRow) {
+            $oldOwnerNames[(int) $oldRow->member_id] = $oldRow->third_member;
+        }
+        $currentTransfers = Member::where('society_id', $societyId)->where('member_transfer', '>', 0)
+            ->pluck('member_transfer', 'id')->all();
+
         $vouchers = [];
         foreach ($rows as $row) {
             $r = $row->getAttributes();
@@ -798,9 +803,20 @@ class DebitCreditNoteController extends Controller
             $ledgerId = (int) ($isDebit ? $r['jv_debit_ledger_head_id'] : $r['jv_credit_ledger_head_id']);
 
             if ($memberId > 0) {
-                $title = $memberList[$memberId] ?? 'Member #' . $memberId;
+                $isTransferredUnit = isset($currentTransfers[$memberId]);
+                $isOldOwner = $isTransferredUnit && $r['member_transfer'] !== null && (int) $r['member_transfer'] < (int) $currentTransfers[$memberId];
+                if ($isOldOwner && isset($oldOwnerNames[$memberId]) && $oldOwnerNames[$memberId] !== '') {
+                    $title = $oldOwnerNames[$memberId];
+                } else {
+                    $title = $memberList[$memberId] ?? 'Member #' . $memberId;
+                }
                 if (isset($flatNoList[$memberId]) && $flatNoList[$memberId] !== '') {
                     $title .= ' -- ' . $flatNoList[$memberId];
+                }
+                if ($isOldOwner) {
+                    $title .= ' (Old Member)';
+                } elseif ($isTransferredUnit) {
+                    $title .= ' (New Member)';
                 }
             } else {
                 $title = $ledgerTitles[$ledgerId] ?? 'Account #' . $ledgerId;

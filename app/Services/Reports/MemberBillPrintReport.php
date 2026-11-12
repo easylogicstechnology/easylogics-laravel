@@ -29,6 +29,43 @@ class MemberBillPrintReport
         $isSet = fn ($k) => array_key_exists($k, $q) && $q[$k] !== null;
         $filled = fn ($k) => $isSet($k) && !BillPrintReport::phpEmpty($q[$k]);
 
+        // Print Bill / Download PDF at the bottom of the bill window: only bill_id is sent. Month, type and whether it
+        // is a previous owner's bill are read from that bill itself (own society only), and the bill is pinned by id.
+        $singleBillId = $filled('bill_id') ? (int) $q['bill_id'] : 0;
+        if ($singleBillId > 0) {
+            $one = DB::table('member_bill_summaries')->where('id', $singleBillId)->where('society_id', $this->societyId)
+                ->first(['member_id', 'member_transfer', 'month', 'bill_type', 'bill_generated_date']);
+            if ($one) {
+                $q['month'] = $one->month;
+                $q['bill_type'] = $one->bill_type;
+                $currentTransfer = (int) (DB::table('members')->where('id', $one->member_id)->value('member_transfer') ?? 0);
+                $q['member_record'] = ((int) $one->member_transfer != $currentTransfer) ? 'Old' : 'Current';
+
+                // "Last received": with no period chosen the receipts shown are those of the bill's financial year
+                // up to the bill's date (an April bill reaches back to the previous bill, which lies in the year
+                // before) - without a period the bill template lists no receipt at all.
+                if (BillPrintReport::phpEmpty($q['receipt_from'] ?? null) || BillPrintReport::phpEmpty($q['receipt_to'] ?? null)) {
+                    $thisBillDate = $one->bill_generated_date;
+                    $billTs = strtotime($thisBillDate);
+                    $from = (date('n', $billTs) >= 4 ? date('Y', $billTs) : date('Y', $billTs) - 1) . '-04-01';
+                    $previousBillDate = DB::table('member_bill_summaries')
+                        ->where('member_id', $one->member_id)->where('society_id', $this->societyId)
+                        ->where('member_transfer', $one->member_transfer)->where('bill_type', $one->bill_type)
+                        ->where('bill_generated_date', '<', $thisBillDate)
+                        ->orderByDesc('bill_generated_date')->orderByDesc('id')->value('bill_generated_date');
+                    if ($previousBillDate && strtotime($previousBillDate) < strtotime($from)) {
+                        $from = $previousBillDate;
+                    }
+                    $q['receipt_from'] = $from;
+                    $q['receipt_to'] = $thisBillDate;
+                }
+            }
+        }
+
+        // (arrow functions copy $q when they are created, so they are made again to see what was filled in above)
+        $isSet = fn ($k) => array_key_exists($k, $q) && $q[$k] !== null;
+        $filled = fn ($k) => $isSet($k) && !BillPrintReport::phpEmpty($q[$k]);
+
         $billMonth = $filled('month') ? $q['month'] : 1;
         $from = $filled('bill_from') ? $q['bill_from'] : '';
         $to = $filled('bill_to') ? $q['bill_to'] : '';
@@ -47,6 +84,9 @@ class MemberBillPrintReport
             ->where('b.society_id', $this->societyId)->where('b.month', $billMonth)->where('b.bill_type', $billType);
         if ($recordType != 'Old') {
             $summary->where('b.financial_year_id', $this->financialYearId);
+        }
+        if ($singleBillId > 0) {
+            $summary->where('b.id', $singleBillId);
         }
 
         $or = [];

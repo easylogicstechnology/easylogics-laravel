@@ -62,8 +62,53 @@ class BillSummaryUpdateReport
             $debit = abs($openingTemp);
         }
         $txn = $trial->memberBalance((int) $memberId);
+        $txn['debit'] += $this->billLevelAdjustment((int) $memberId);
 
         return ($debit + $txn['debit']) - ($credit + $txn['credit']);
+    }
+
+    /**
+     * Bill-level principal adjustments that are not in the bill's head lines (port of Cake's
+     * _memberBillLevelAdjustment).
+     *
+     * The member's debit is built from the bill HEAD lines (member_bill_generates) plus interest, but a bill can
+     * carry an extra principal adjustment of its own (member_bill_summaries.monthly_principal_amount differing from
+     * the sum of its head lines, e.g. an "Other Adjustment (Principal)" keyed in on the bill). The member ledger and
+     * the bill's stored balance include it, so this comparison has to as well - otherwise a correct member shows as
+     * a false mismatch. Only bills that HAVE head lines are compared (a bill with none is left as before), inside
+     * the same date window as the rest of the report. Used here only - the Trial Balance / Balance Sheet post from
+     * the ledger heads and stay as they are.
+     */
+    private function billLevelAdjustment(int $memberId): float
+    {
+        if ($memberId <= 0) {
+            return 0.0;
+        }
+
+        $heads = DB::table('member_bill_generates')
+            ->where('member_id', $memberId)->where('society_id', $this->societyId)
+            ->groupBy('member_id', 'bill_generated_date', 'bill_type')
+            ->selectRaw('member_id, bill_generated_date, bill_type, SUM(amount) as amt');
+
+        $q = DB::table('member_bill_summaries as s')
+            ->joinSub($heads, 'g', function ($j) {
+                $j->on('g.member_id', '=', 's.member_id')
+                    ->on('g.bill_generated_date', '=', 's.bill_generated_date')
+                    ->on('g.bill_type', '=', 's.bill_type');
+            })
+            ->where('s.member_id', $memberId)->where('s.society_id', $this->societyId);
+
+        if ($this->yearStart && $this->yearEnd) {
+            $q->whereBetween('s.bill_generated_date', [$this->yearStart, $this->yearEnd]);
+        } elseif ($this->yearStart) {
+            $q->where('s.bill_generated_date', $this->yearStart);
+        } elseif ($this->yearEnd) {
+            $q->where('s.bill_generated_date', $this->yearEnd);
+        }
+
+        $adjustment = round((float) $q->selectRaw('SUM(s.monthly_principal_amount - g.amt) as adjustment')->value('adjustment'), 2);
+
+        return abs($adjustment) < 0.005 ? 0.0 : $adjustment;
     }
 
     /** SocietyBill::getMemberWiseClosingBalance: the latest bill row (highest id) of each member for this year and bill type */
@@ -99,9 +144,8 @@ class BillSummaryUpdateReport
     public function reconcile(int $memberId, bool $save): array
     {
         $memberTransfer = (int) (DB::table('members')->where('id', $memberId)->value('member_transfer') ?? 0);
-        $prev = DB::table('member_year_wise_closing_balance')
-            ->where('member_id', $memberId)->where('year_id', ($this->financialYearId ?? 0) - 1)->orderBy('id')
-            ->get(['bill_type', 'principal_balance', 'interest_balance', 'tax_balance']);
+        // (a transferred unit's new owner does not inherit the old owner's closing row - see MemberClosing)
+        $prev = \App\Support\MemberClosing::rowsForOpening($memberId, $memberTransfer, (int) ($this->financialYearId ?? 0));
         $reg = null;
         foreach ($prev as $p) {
             if ($p->bill_type === 'reg') {

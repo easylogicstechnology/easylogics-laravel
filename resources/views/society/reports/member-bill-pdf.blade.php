@@ -959,7 +959,7 @@ table .table-print-all-bill{
                                                         <td class=\"text-center\">$paymentDate</td>
                                                         <td>$receiptDetails[member_bank_id], $receiptDetails[member_bank_branch]</td>
                                                         <td class=\"text-center\">$receiptDetails[bill_generated_id]</td>
-                                                        <td class=\"text-right\">".number_format($receiptDetails[amount_paid])."</td>
+                                                        <td class=\"text-right\">".number_format($receiptDetails['amount_paid'])."</td>
                                                        </tr>";
     
                                                 $memberTotalPaid += $receiptDetails['amount_paid'];
