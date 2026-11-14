@@ -30,3 +30,6 @@ Homestead.json
 Homestead.yaml
 Thumbs.db
 /deploy/db_test.php
+
+# WhatsApp bill PDFs (members' data) - generated at runtime, never commit
+/public/tmp/

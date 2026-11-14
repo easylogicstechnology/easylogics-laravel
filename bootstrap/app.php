@@ -20,6 +20,9 @@ return Application::configure(basePath: dirname(__DIR__))
         // alone, 'username' is added so a leading/trailing space is not silently dropped either.
         $middleware->trimStrings(except: ['username']);
 
+        // The WhatsApp providers (Interakt / K3) call the message-status webhook without a session or CSRF token.
+        $middleware->validateCsrfTokens(except: ['whatsapp/webhook', 'society_bills/whatsapp_webhook']);
+
         // CakePHP AuthComponent::_unauthenticated(): flash authError and land on the home page (the login
         // modal opens with it); an AJAX request just gets 403.
         $middleware->redirectGuestsTo(function (Request $request) {
