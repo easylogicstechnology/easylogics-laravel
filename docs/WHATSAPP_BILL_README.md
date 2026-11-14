@@ -34,7 +34,9 @@ Files: `app/Http/Controllers/Society/WhatsAppBillController.php`, `app/Services/
 - Table: `php artisan migrate --path=database/migrations/2026_11_12_000002_create_reseller_whatsapp_senders_table.php`
   (creates reseller_whatsapp_senders if missing, adds the new columns; nothing is dropped).
 - The webhook accepts both Interakt and Meta (entry/changes/statuses) bodies and checks each message against its own
-  reseller's webhook secret (Interakt-Signature or X-Hub-Signature-256).
+  reseller's webhook secret (Interakt-Signature or X-Hub-Signature-256, or K3's custom X-Webhook-Secret header).
+  With a secret saved, a callback without any of these headers is refused with 401, so after saving a secret the
+  provider's webhook must be set to send it; with no secret saved, callbacks are not verified.
 - K3 / Pinbot: the Meta-format request is the standard WhatsApp Cloud API template message. Confirm the exact URL and auth
   header from the K3 panel's API docs before switching a reseller to ACTIVE.
 

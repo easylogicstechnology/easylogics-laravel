@@ -53,10 +53,38 @@ class WhatsAppServiceTest extends TestCase
 
     public function test_webhook_signature(): void
     {
+        // no secret configured for the sender: not checked
         $this->assertTrue(W::signatureOk('{}', '', null));
-        $this->assertTrue(W::signatureOk('{}', 's', ''));
+        $this->assertTrue(W::signatureOk('{}', null, null));
+        // valid Interakt / Meta HMAC
         $this->assertTrue(W::signatureOk('{}', 's', 'sha256=' . hash_hmac('sha256', '{}', 's')));
+        // invalid HMAC
         $this->assertFalse(W::signatureOk('{}', 's', 'sha256=bad'));
+        $this->assertFalse(W::signatureOk('{"x":1}', 's', 'sha256=' . hash_hmac('sha256', '{}', 's')));
+        $this->assertFalse(W::signatureOk('{}', 's', 'sha256=' . hash_hmac('sha256', '{}', 'other')));
+    }
+
+    /** Security regression: with a secret configured, a request without any signature header is refused. */
+    public function test_webhook_rejects_missing_signature_when_secret_set(): void
+    {
+        $this->assertFalse(W::signatureOk('{}', 's', null));
+        $this->assertFalse(W::signatureOk('{}', 's', ''));
+        $this->assertFalse(W::signatureOk('{}', 's', null, null));
+        $this->assertFalse(W::signatureOk('{}', 's', '', ''));
+        $this->assertFalse(W::signatureOk('{}', 's', '   ', '   '));
+    }
+
+    /** K3 custom header and HMAC together: any one valid credential passes, wrong ones never do. */
+    public function test_webhook_header_combinations(): void
+    {
+        $good = 'sha256=' . hash_hmac('sha256', '{}', 's');
+        $this->assertTrue(W::signatureOk('{}', 's', null, 's'));
+        $this->assertTrue(W::signatureOk('{}', 's', $good, 's'));
+        $this->assertTrue(W::signatureOk('{}', 's', $good, 'x'));
+        $this->assertTrue(W::signatureOk('{}', 's', 'sha256=bad', 's'));
+        $this->assertFalse(W::signatureOk('{}', 's', 'sha256=bad', 'x'));
+        $this->assertFalse(W::signatureOk('{}', 's', null, 'S'));
+        $this->assertFalse(W::signatureOk('{}', 's', null, 's '.'x'));
     }
 
     public function test_pdf_html_sanitizer_and_batch_id(): void

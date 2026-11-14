@@ -399,23 +399,30 @@ class WhatsAppService
     }
 
     /**
-     * Cake _whatsappWebhookSignatureOk(): with a secret set, a present Interakt-Signature
-     * (sha256=<hmac of the body>) must match. As in Cake, a request without the header is let through.
+     * Webhook verification. With no secret set for the sender, nothing is checked (as in Cake).
+     * With a secret set, the request must carry one of:
+     *  - X-Webhook-Secret: <secret>                      (K3 / Pinbot: custom header set via /v2/setwebhooks)
+     *  - Interakt-Signature / X-Hub-Signature-256: sha256=<HMAC-SHA256 of the raw body>   (Interakt / Meta)
+     * A request with neither header is refused (Cake let it through; that allowed forged status updates).
      */
     public static function signatureOk(string $rawBody, ?string $secret, ?string $signature, ?string $plainHeader = null): bool
     {
         if ($secret === null || $secret === '') {
             return true;
         }
-        // K3 / Pinbot cannot sign: its webhook is set with a custom header, sent back as X-Webhook-Secret: <secret>
-        if ($plainHeader !== null && $plainHeader !== '') {
-            return hash_equals($secret, $plainHeader);
+        $plainHeader = trim((string) $plainHeader);
+        $signature = trim((string) $signature);
+        if ($plainHeader === '' && $signature === '') {
+            return false;
         }
-        if ($signature === null || $signature === '') {
+        if ($plainHeader !== '' && hash_equals($secret, $plainHeader)) {
+            return true;
+        }
+        if ($signature !== '' && hash_equals('sha256=' . hash_hmac('sha256', $rawBody, $secret), $signature)) {
             return true;
         }
 
-        return hash_equals('sha256=' . hash_hmac('sha256', $rawBody, $secret), $signature);
+        return false;
     }
 
     /**
