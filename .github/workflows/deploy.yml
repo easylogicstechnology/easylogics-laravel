@@ -1,8 +1,7 @@
 name: Deploy
 
-# main -> production, dev -> testing (same mapping as the CakePHP repo).
-# While only the test server exists, deploy it by hand from the Actions tab:
-# Run workflow -> target "testing" (deploys the main branch).
+# main -> production (live societynew.in), dev -> testing.
+# Manual run from the Actions tab: Run workflow -> target "production" deploys main.
 #
 # Runs on a self-hosted runner installed on the server (the server dials OUT to
 # GitHub, so no SSH secrets). The runner must be registered to THIS repository,
@@ -85,7 +84,7 @@ jobs:
             exit 0
           fi
           for i in 1 2 3; do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$SITE_URL" || echo 000)
+            code=$(curl -sSL -o /dev/null -w '%{http_code}' --max-time 30 "$SITE_URL" || echo 000)
             if [ "$code" = "200" ]; then
               echo "OK: $SITE_URL returned 200"
               exit 0
