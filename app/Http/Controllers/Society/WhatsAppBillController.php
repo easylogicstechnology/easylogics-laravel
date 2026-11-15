@@ -368,6 +368,29 @@ class WhatsAppBillController extends Controller
                 : 'bill society ' . $b->society_id . '/fy ' . $b->financial_year_id . '/month ' . $b->month . '/type ' . $b->bill_type
                   . '/transfer ' . (int) $b->member_transfer . ' vs member transfer ' . (int) DB::table('members')->where('id', $b->member_id)->value('member_transfer')
                   . '; screen society ' . $this->societyId() . '/fy ' . var_export($this->fyId(), true);
+            if ($b) {
+                // run the report's own query step by step to see which condition drops the bill
+                $id = (int) $log->bill_summary_id;
+                $base = fn () => DB::table('member_bill_summaries as b')->where('b.id', $id);
+                $steps = [
+                    'soc' => $base()->where('b.society_id', $this->societyId())->count(),
+                    'mon' => $base()->where('b.month', $b->month)->count(),
+                    'typ' => $base()->where('b.bill_type', $b->bill_type)->count(),
+                    'fy' => $base()->where('b.financial_year_id', $this->fyId())->count(),
+                ];
+                try {
+                    $full = DB::table('member_bill_summaries as b')
+                        ->leftJoin('societies as s', 's.id', '=', 'b.society_id')
+                        ->leftJoin('members as m', 'm.id', '=', 'b.member_id')
+                        ->select(array_merge(\App\Support\TextSelect::columns('member_bill_summaries', 'b'), \App\Support\TextSelect::columns('societies', 's', 's__'), \App\Support\TextSelect::columns('members', 'm', 'm__')))
+                        ->where('b.id', $id)->get();
+                    $steps['sel'] = $full->count();
+                    $steps['cols'] = count(\App\Support\TextSelect::columns('member_bill_summaries', 'b'));
+                } catch (\Throwable $e) {
+                    $steps['sel'] = 'ERR ' . substr($e->getMessage(), 0, 160);
+                }
+                $why .= '; steps ' . json_encode($steps);
+            }
             throw new \RuntimeException('bill ' . $log->bill_no . ' (flat ' . $log->flat_no . ') not found [' . $why . ']');
         }
         $data += [
