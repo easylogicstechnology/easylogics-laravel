@@ -420,4 +420,9 @@ Route::middleware(['auth', EnsureRole::class . ':Society'])->prefix('society')->
 // WhatsApp message-status webhook (Interakt / K3): public, no login, CSRF exempt (bootstrap/app.php).
 // The CakePHP path is kept too, so a webhook URL already set at the provider keeps working.
 Route::post('/whatsapp/webhook', [\App\Http\Controllers\Society\WhatsAppBillController::class, 'webhook'])->name('whatsapp.webhook');
+// GET on the webhook URL: providers check the URL when it is saved (Meta-style verify echoes hub.challenge); a browser
+// visit shows that the endpoint is up instead of a 405.
+Route::get('/whatsapp/webhook', fn (\Illuminate\Http\Request $r) => $r->filled('hub_challenge')
+    ? response((string) $r->query('hub_challenge'), 200)->header('Content-Type', 'text/plain')
+    : response()->json(['status' => 'ok', 'message' => 'WhatsApp status webhook is up. Providers send POST requests here.']));
 Route::post('/society_bills/whatsapp_webhook', [\App\Http\Controllers\Society\WhatsAppBillController::class, 'webhook']);
