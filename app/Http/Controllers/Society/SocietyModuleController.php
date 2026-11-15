@@ -4733,7 +4733,8 @@ class SocietyModuleController extends Controller
             $memberDetails = $memberRow;
             $memberId = $memberDetails->id;
             $member_transfer = $memberDetails->member_transfer ?? 0;
-            $memberTariffs = $memberRow->tariffs;
+            // Cake uniqueTariffRowsPerHead(): only this society's rows, one per ledger head, inactive heads out
+            $memberTariffs = $this->uniqueTariffRowsPerHead($memberRow->tariffs, $sid);
 
             $transferInCurrentyear = false;
             if (!empty($memberListWithTransferStatus)) {
@@ -4874,6 +4875,44 @@ class SocietyModuleController extends Controller
                 'sgst_total' => $sgstTotal,
                 'tax_total' => $taxTotal,
             ]) !== false;
+    }
+
+    /**
+     * CakePHP SocietyBillsController::uniqueTariffRowsPerHead() + the is_active skip of the bill loop.
+     * member_tariffs are loaded by member_id only, so rows tagged with another society (e.g. a tariff CSV uploaded
+     * in the wrong society) and second rows of the same head were all charged - heads without a title in this
+     * society and a far too big bill. Keep only this society's rows, one per ledger head (latest updated_date,
+     * then highest id), drop inactive ones; rows without a head pass through. Order of first appearance is kept.
+     */
+    private function uniqueTariffRowsPerHead($rows, $sid)
+    {
+        $keep = [];
+        $slot = [];
+        $rankOf = [];
+        foreach ($rows as $row) {
+            if (isset($row->society_id) && (string) $row->society_id !== (string) $sid) {
+                continue;
+            }
+            if (isset($row->is_active) && !$row->is_active) {
+                continue;
+            }
+            $head = (string) ($row->ledger_head_id ?? '');
+            if ($head === '' || $head === '0') {
+                $keep[] = $row;
+                continue;
+            }
+            $rank = [(string) ($row->updated_date ?? ''), (int) ($row->id ?? 0)];
+            if (!isset($slot[$head])) {
+                $slot[$head] = count($keep);
+                $rankOf[$head] = $rank;
+                $keep[] = $row;
+            } elseif ($rank > $rankOf[$head]) {
+                $keep[$slot[$head]] = $row;
+                $rankOf[$head] = $rank;
+            }
+        }
+
+        return collect($keep);
     }
 
     private function memberRegularBillLedgerHeadSettings($sid)
