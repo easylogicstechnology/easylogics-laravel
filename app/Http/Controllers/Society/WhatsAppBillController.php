@@ -361,7 +361,14 @@ class WhatsAppBillController extends Controller
 
         $data = (new MemberBillPrintReport($this->societyId(), $this->fyId()))->run($q);
         if (empty($data['printBillDetails'])) {
-            throw new \RuntimeException('bill ' . $log->bill_no . ' (flat ' . $log->flat_no . ') not found');
+            // say why, so the log row shows what to fix
+            $b = DB::table('member_bill_summaries')->where('id', (int) $log->bill_summary_id)
+                ->first(['society_id', 'financial_year_id', 'month', 'bill_type', 'member_id', 'member_transfer']);
+            $why = !$b ? 'bill row #' . $log->bill_summary_id . ' missing'
+                : 'bill society ' . $b->society_id . '/fy ' . $b->financial_year_id . '/month ' . $b->month . '/type ' . $b->bill_type
+                  . '/transfer ' . (int) $b->member_transfer . ' vs member transfer ' . (int) DB::table('members')->where('id', $b->member_id)->value('member_transfer')
+                  . '; screen society ' . $this->societyId() . '/fy ' . var_export($this->fyId(), true);
+            throw new \RuntimeException('bill ' . $log->bill_no . ' (flat ' . $log->flat_no . ') not found [' . $why . ']');
         }
         $data += [
             'q' => $q,
