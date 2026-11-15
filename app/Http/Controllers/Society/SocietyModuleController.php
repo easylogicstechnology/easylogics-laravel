@@ -4724,6 +4724,10 @@ class SocietyModuleController extends Controller
 
         $response = ['error' => 1, 'error_message' => 'Member Tariff has not been set.'];
 
+        // One transaction for the whole run: one commit instead of 3+ per member (each commit is a disk
+        // sync), so generation is many times faster and a failure leaves no half-generated bills.
+        DB::beginTransaction();
+        try {
         foreach ($societyMemberLists as $memberRow) {
             $memberDetails = $memberRow;
             $memberId = $memberDetails->id;
@@ -4751,6 +4755,12 @@ class SocietyModuleController extends Controller
                     $response = $responseArray;
                 }
             }
+        }
+            DB::commit();
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            report($e);
+            return response()->json(['error' => 1, 'error_message' => 'Bill generation failed, nothing was saved: ' . $e->getMessage()]);
         }
 
         return response()->json($response);

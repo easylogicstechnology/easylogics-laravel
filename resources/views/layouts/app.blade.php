@@ -362,11 +362,16 @@ function generateRegularBill() {
             starting_no: document.getElementById('gb_starting_no').value,
             supplementary: document.getElementById('gb_supplementary').checked ? 1 : 0
         })
-    }).then(function(r) { return r.json(); })
+    }).then(function(r) {
+        return r.text().then(function(t) {
+            try { return JSON.parse(t); }
+            catch (e) { return {error: 1, error_message: 'Server error (HTTP ' + r.status + (r.status == 504 || r.status == 524 ? ' - timed out, please try again' : '') + '). Bills were not generated.'}; }
+        });
+    })
     .then(function(d) {
         if (d.error === 0) { msg.innerHTML = '<span style="color:green;">' + (d.error_message || d.message) + '</span>'; }
         else { msg.innerHTML = '<span style="color:red;">' + (d.error_message || d.message) + '</span>'; }
-    }).catch(function() { msg.innerHTML = '<span style="color:red;">Error occurred</span>'; });
+    }).catch(function() { msg.innerHTML = '<span style="color:red;">Network error - please check the connection and try again</span>'; });
 }
 
 function loadLedgerHeadDetails(ledgerId) {
