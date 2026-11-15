@@ -4726,6 +4726,7 @@ class SocietyModuleController extends Controller
 
         // One transaction for the whole run: one commit instead of 3+ per member (each commit is a disk
         // sync), so generation is many times faster and a failure leaves no half-generated bills.
+        $countGenerated = 0; $countExists = 0; $countNoTariff = 0; $otherError = null;
         DB::beginTransaction();
         try {
         foreach ($societyMemberLists as $memberRow) {
@@ -4742,6 +4743,9 @@ class SocietyModuleController extends Controller
 
             $billNo = $this->memberBillsUniqueNumber($sid, $fyId, $billStartingNo);
 
+            if ($memberTariffs->isEmpty()) {
+                $countNoTariff++;
+            }
             if ($memberTariffs->isNotEmpty()) {
                 $responseArray = $this->calculateMembersRegularBillByTariff(
                     $memberId, $memberTariffs, $billNo,
@@ -4753,10 +4757,29 @@ class SocietyModuleController extends Controller
                 );
                 if (!empty($responseArray)) {
                     $response = $responseArray;
+                    if (($responseArray['error'] ?? 1) === 0) {
+                        $countGenerated++;
+                    } elseif (str_contains((string) ($responseArray['error_message'] ?? ''), 'already exists')) {
+                        $countExists++;
+                    } else {
+                        $otherError = $responseArray['error_message'] ?? null;
+                    }
                 }
             }
         }
             DB::commit();
+        // Say how the whole run went (it used to show only the last member's result)
+        $total = $societyMemberLists->count();
+        $notes = [];
+        if ($countExists) $notes[] = $countExists . ' member(s) already had a bill for this month (skipped)';
+        if ($countNoTariff) $notes[] = $countNoTariff . ' member(s) have no tariff set (skipped)';
+        if ($countGenerated) {
+            $response = ['error' => 0, 'error_message' => $countGenerated . ' of ' . $total . ' member bill(s) generated successfully.' . ($notes ? ' ' . implode('; ', $notes) . '.' : '')];
+        } elseif ($countExists && $countExists + $countNoTariff === $total) {
+            $response = ['error' => 1, 'error_message' => 'Bill for this month already exists for ' . $countExists . ' of ' . $total . ' member(s); nothing new to generate.' . ($countNoTariff ? ' ' . $countNoTariff . ' member(s) have no tariff set.' : '')];
+        } elseif ($otherError) {
+            $response = ['error' => 1, 'error_message' => $otherError . ($notes ? ' (' . implode('; ', $notes) . ')' : '')];
+        }
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
