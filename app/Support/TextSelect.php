@@ -23,7 +23,8 @@ class TextSelect
         if (!isset(self::$cache[$table])) {
             self::$cache[$table] = array_map(
                 fn ($r) => [$r->column_name, strtolower($r->data_type)],
-                DB::select('select column_name, data_type from information_schema.columns where table_schema = database() and table_name = ? order by ordinal_position', [$table])
+                // aliased: MySQL 8 returns these as COLUMN_NAME / DATA_TYPE, MariaDB as column_name / data_type
+                DB::select('select column_name as column_name, data_type as data_type from information_schema.columns where table_schema = database() and table_name = ? order by ordinal_position', [$table])
             );
         }
         $out = [];
