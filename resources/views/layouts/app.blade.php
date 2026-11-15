@@ -244,7 +244,7 @@
             @if(\App\Support\SocietyMenuAccess::topBar('tb_generatebill')) <a href="javascript:void(0);" onclick="openModal('generateBillModal')">&#128220; Generate Bill</a> @endif
             @if(\App\Support\SocietyMenuAccess::topBar('tb_printbill')) <a href="javascript:void(0);" onclick="openModal('printBillModal')">&#128424; Print Bill</a> @endif
             @if(\App\Support\SocietyMenuAccess::topBar('tb_emailbill')) <a href="javascript:void(0);" onclick="openModal('emailBillModal')">&#9993; Email Bill</a> @endif
-            @if(\App\Support\SocietyMenuAccess::topBar('tb_whatsappbill')) <a href="#" style="background:#25D366;">&#128172; Send WhatsApp</a> @endif
+            @if(\App\Support\SocietyMenuAccess::topBar('tb_whatsappbill')) <a href="{{ route('society.whatsappBill') }}" style="background:#25D366;">&#128172; WhatsApp Bill</a> @endif
             @if(\App\Support\SocietyMenuAccess::topBar('tb_sendsms')) <a href="#" style="background:#3498db;">&#128233; Send SMS</a> @endif
         </div>
     </div>

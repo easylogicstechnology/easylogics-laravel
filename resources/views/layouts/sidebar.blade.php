@@ -11,6 +11,7 @@
         </div>
 
         <a href="{{ route('admin.societies.parameters') }}" class="{{ request()->routeIs('admin.societies.parameters') ? 'active' : '' }}"><i class="fa fa-sliders"></i>Society Parameters</a>
+        <a href="{{ route('admin.whatsappSenders') }}" class="{{ request()->routeIs('admin.whatsappSenders*') ? 'active' : '' }}"><i class="fa fa-whatsapp"></i>WhatsApp APIs</a>
 
         <div class="menu-label menu-toggle"><span><i class="fa fa-bar-chart"></i>Reports</span> <span class="caret-icon">&#9656;</span></div>
         <div class="submenu">

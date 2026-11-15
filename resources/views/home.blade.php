@@ -38,7 +38,7 @@
                         <li><a href="#solutions">Solutions</a></li>
                         <li><a href="#why">Why Us</a></li>
                         <li><a href="#founder">Partners</a></li>
-                        <li><a href="/about/about_us.php">About</a></li>
+                        <li><a href="{{ route('about') }}">About</a></li>
                         <li><a href="#contact">Contact</a></li>
                     </ul>
                 </nav>
@@ -490,9 +490,9 @@
                     <div>
                         <h4>Company</h4>
                         <ul class="foot-links">
-                            <li><a href="/about/about_us.php">About Us</a></li>
-                            <li><a href="/terms/termandcondition">Terms &amp; Conditions</a></li>
-                            <li><a href="/privacy_policy">Privacy Policy</a></li>
+                            <li><a href="{{ route('about') }}">About Us</a></li>
+                            <li><a href="{{ route('terms') }}">Terms &amp; Conditions</a></li>
+                            <li><a href="{{ route('privacy') }}">Privacy Policy</a></li>
                             <li><a href="#contact">Contact Us</a></li>
                         </ul>
                     </div>

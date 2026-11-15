@@ -42,6 +42,11 @@ Route::get('/', function () {
 });
 Route::post('/submit-enquiry', [HomeController::class, 'submitEnquiry'])->name('enquiry.submit');
 
+// Public static content pages (CakePHP: about_us / termandcondition / privacy_policy).
+Route::view('/about', 'pages.about')->name('about');
+Route::view('/terms', 'pages.terms')->name('terms');
+Route::view('/privacy', 'pages.privacy')->name('privacy');
+
 Route::middleware('guest')->group(function () {
     Route::get('/login', [LoginController::class, 'showLoginForm'])->name('login');
     Route::post('/login', [LoginController::class, 'login']);
@@ -98,6 +103,15 @@ Route::middleware(['auth', EnsureRole::class . ':Admin'])->prefix('admin')->grou
     Route::delete('/website/partners/{id}', [AdminWebsiteContent::class, 'deletePartner'])->name('admin.website.partners.destroy');
     Route::match(['get', 'post'], '/website/help-video', [AdminWebsiteContent::class, 'manageHelpVideo'])->name('admin.website.helpVideo');
     Route::delete('/website/help-video', [AdminWebsiteContent::class, 'deleteHelpVideo'])->name('admin.website.helpVideo.destroy');
+
+    // WhatsApp APIs: one WhatsApp number + API account per reseller (Admin only)
+    Route::get('/whatsapp-apis', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'index'])->name('admin.whatsappSenders');
+    Route::post('/whatsapp-apis/create-tables', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'migrate'])->name('admin.whatsappSenders.migrate');
+    Route::post('/whatsapp-apis/{resellerId}', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'save'])->whereNumber('resellerId')->name('admin.whatsappSenders.save');
+    Route::post('/whatsapp-apis/{resellerId}/clear-secret', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'clearSecret'])->whereNumber('resellerId')->name('admin.whatsappSenders.clearSecret');
+    // a save URL opened by reload / the address bar (GET) shows the list instead of a 405 page
+    Route::get('/whatsapp-apis/create-tables', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'index']);
+    Route::get('/whatsapp-apis/{resellerId}', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'index'])->whereNumber('resellerId');
 });
 
 Route::middleware(['auth', EnsureRole::class . ':Reseller,SubReseller'])->prefix('reseller')->group(function () {
@@ -394,4 +408,16 @@ Route::middleware(['auth', EnsureRole::class . ':Society'])->prefix('society')->
     // One bill as a PDF (the bill window's Print Bill = inline, Download PDF = ?download=1)
     Route::get('/bill-pdf', [\App\Http\Controllers\Society\AccountReportController::class, 'billPdf'])->name('society.billPdf');
     Route::get('/bill-receipt', [SocietyModuleController::class, 'billReceipt'])->name('society.billReceipt');
+
+    // Send WhatsApp Bill (CakePHP society_bills/send_bill_whatsapp + whatsapp_send_batch / _batch_status / _retry_failed / _batch_history)
+    Route::get('/whatsapp-bill', [\App\Http\Controllers\Society\WhatsAppBillController::class, 'index'])->name('society.whatsappBill')->middleware(CheckSubResellerModule::class . ':tb_whatsappbill,view|generate');
+    Route::get('/whatsapp-bill/history', [\App\Http\Controllers\Society\WhatsAppBillController::class, 'history'])->name('society.whatsappBatchHistory')->middleware(CheckSubResellerModule::class . ':tb_whatsappbill,view|generate');
+    Route::get('/whatsapp-bill/status', [\App\Http\Controllers\Society\WhatsAppBillController::class, 'batchStatus'])->name('society.whatsappBatchStatus')->middleware(CheckSubResellerModule::class . ':tb_whatsappbill,view|generate,json');
+    Route::post('/whatsapp-bill/send', [\App\Http\Controllers\Society\WhatsAppBillController::class, 'sendBatch'])->name('society.whatsappSendBatch')->middleware(CheckSubResellerModule::class . ':tb_whatsappbill,generate,json');
+    Route::post('/whatsapp-bill/retry', [\App\Http\Controllers\Society\WhatsAppBillController::class, 'retryFailed'])->name('society.whatsappRetryFailed')->middleware(CheckSubResellerModule::class . ':tb_whatsappbill,generate,json');
 });
+
+// WhatsApp message-status webhook (Interakt / K3): public, no login, CSRF exempt (bootstrap/app.php).
+// The CakePHP path is kept too, so a webhook URL already set at the provider keeps working.
+Route::post('/whatsapp/webhook', [\App\Http\Controllers\Society\WhatsAppBillController::class, 'webhook'])->name('whatsapp.webhook');
+Route::post('/society_bills/whatsapp_webhook', [\App\Http\Controllers\Society\WhatsAppBillController::class, 'webhook']);
