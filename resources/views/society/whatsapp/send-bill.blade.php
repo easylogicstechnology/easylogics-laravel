@@ -365,7 +365,13 @@ function buildBillsTable(bills) {
         var errText = String(b.error || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         html += '<td style="min-width:220px;max-width:360px;white-space:normal;word-break:break-word;font-size:11px;" title="' + errText + '">' + (errText || '—') + '</td>';
         html += '<td>' + (b.retry_count > 0 ? b.retry_count : '—') + '</td>';
-        html += '<td>';
+        html += '<td style="white-space:nowrap;">';
+        if (b.pdf_url) {
+            html += '<a href="' + waEsc(b.pdf_url) + '" target="_blank" rel="noopener" class="btn btn-xs btn-default" title="Open the bill PDF that was sent">PDF</a> ';
+        }
+        if (b.api_response) {
+            html += '<a href="#" class="btn btn-xs btn-default" title="' + String(b.api_response).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '" onclick="alert(this.title); return false;">API</a> ';
+        }
         if (retryable) {
             html += '<button class="btn-retry" onclick="retrySingleBill(\'' + currentBatchId + '\',' + b.id + ')"><i class="fa fa-refresh"></i></button>';
         }

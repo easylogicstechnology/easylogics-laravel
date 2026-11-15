@@ -186,6 +186,9 @@ class WhatsAppBillController extends Controller
                 'error' => $l->error_message,
                 'retry_count' => $l->retry_count,
                 'api_message_id' => $l->api_message_id,
+                // to check the bill PDF the member was sent, and what the WhatsApp provider answered
+                'pdf_url' => !empty($l->pdf_path) ? $this->pdfUrl($l->pdf_path) : '',
+                'api_response' => $l->api_response ? mb_substr((string) $l->api_response, 0, 600) : '',
             ])->all();
 
         return response()->json(['batch_id' => $batch->batch_id, 'summary' => $this->summary($batch), 'bills' => $bills]);
