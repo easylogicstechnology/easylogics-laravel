@@ -18,6 +18,8 @@ class SocietyParameter extends Model
         'interest_rate',
         'method_id',
         'tariff_id',
+        'penality',
+        'interest_plus_penality',
         'cgst_tax_per',
         'igst_tax_per',
         'sgst_tax_per',

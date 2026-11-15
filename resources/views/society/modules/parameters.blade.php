@@ -51,11 +51,11 @@
             </div>
             <div class="form-group">
                 <label>Penality</label>
-                <input type="text" name="penality" class="form-control" value="{{ old('penality') }}">
+                <input type="text" name="penality" class="form-control" value="{{ old('penality', $params->penality ?? '') }}">
             </div>
             <div class="form-group">
                 <label>Both Interest And Penality</label>
-                <input type="text" name="interest_plus_penality" class="form-control" value="{{ old('interest_plus_penality') }}">
+                <input type="text" name="interest_plus_penality" class="form-control" value="{{ old('interest_plus_penality', $params->interest_plus_penality ?? '') }}">
             </div>
             <div class="form-group">
                 <label>GST Limit</label>
@@ -68,7 +68,7 @@
             <div class="form-group">
                 <label>Signature Image</label>
                 @if(!empty($params->signature_image_path))
-                    <div><img src="{{ asset($params->signature_image_path) }}" style="height:70px; display:block; margin-bottom:6px;"></div>
+                    <div><img src="{{ $imageUrl($params->signature_image_path) }}" style="height:70px; display:block; margin-bottom:6px;"></div>
                 @endif
                 <input type="file" name="signature_image" class="form-control" accept=".jpg,.jpeg,.png">
             </div>
@@ -172,7 +172,7 @@
             <div class="form-group">
                 <label>Scanner Image</label>
                 @if(!empty($params->scanner_image_path))
-                    <div><img src="{{ asset($params->scanner_image_path) }}" style="height:100px; width:100px; object-fit:contain; display:block; margin-bottom:6px;"></div>
+                    <div><img src="{{ $imageUrl($params->scanner_image_path) }}" style="height:100px; width:100px; object-fit:contain; display:block; margin-bottom:6px;"></div>
                 @endif
                 <input type="file" name="scanner_image" class="form-control" accept=".jpg,.jpeg,.png">
             </div>
