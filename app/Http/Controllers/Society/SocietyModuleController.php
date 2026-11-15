@@ -116,17 +116,30 @@ class SocietyModuleController extends Controller
         $hasCurrentBillUpdateColumn = Schema::hasColumn('society_parameters', 'current_bill_update_enabled');
 
         if ($request->isMethod('post')) {
-            $data = $request->only([
+            // CakePHP SocietysController::society_parameter(): the whole posted SocietyParameter row is saved, and
+            // Cake's Model::save() silently skips any field that is not a column of society_parameters. Same here,
+            // so a column the live (shared) DB does not have can never turn the save into a 500.
+            $columns = array_flip(Schema::getColumnListing('society_parameters'));
+            $fields = [
                 'billing_frequency_id', 'interest_type_id', 'interest_rate',
-                'method_id', 'tariff_id', 'cgst_tax_per', 'igst_tax_per', 'sgst_tax_per',
+                'method_id', 'tariff_id', 'penality', 'interest_plus_penality',
+                'cgst_tax_per', 'igst_tax_per', 'sgst_tax_per',
                 'is_tariff_mothly', 'show_all_tariff_name', 'bill_note', 'special_field',
                 'show_bills_in_receipt', 'gst_interest', 'gst_interest_arreas',
                 'settlement', 'gst_limit',
-            ]);
+            ];
+            $data = [];
+            foreach ($fields as $field) {
+                if (isset($columns[$field]) && $request->has($field)) {
+                    // Cake posts an empty box as '' (not NULL), which the NOT NULL columns of the Cake table accept
+                    $value = $request->input($field);
+                    $data[$field] = $value === null ? '' : $value;
+                }
+            }
 
             if ($hasCurrentBillUpdateColumn) {
                 $curBillUpdate = $request->input('current_bill_update_enabled', '');
-                $data['current_bill_update_enabled'] = $curBillUpdate === '' ? null : (int) $curBillUpdate;
+                $data['current_bill_update_enabled'] = ($curBillUpdate === '' || $curBillUpdate === null) ? null : (int) $curBillUpdate;
             }
 
             foreach (['signature_image', 'scanner_image'] as $field) {
@@ -134,37 +147,53 @@ class SocietyModuleController extends Controller
                 if ($file) {
                     $ext = strtolower($file->getClientOriginalExtension());
                     if (!in_array($ext, ['jpg', 'jpeg', 'png'], true)) {
-                        return redirect()->route('society.parameters')->with('error', ucfirst(str_replace('_', ' ', $field)) . ' format type is not valid.');
+                        return redirect()->route('society.parameters')->with('error', ($field === 'signature_image' ? 'Signature' : 'Scanner') . ' file format type is not valid.');
                     }
                     $folder = $field === 'signature_image' ? 'society_signature' : 'payment_scanner';
                     $filename = $societyId . '_' . uniqid() . '.' . $ext;
                     $file->move(public_path("img/{$folder}/{$societyId}"), $filename);
-                    $data[$field . '_path'] = "img/{$folder}/{$societyId}/{$filename}";
+                    if (isset($columns[$field . '_path'])) {
+                        $data[$field . '_path'] = "img/{$folder}/{$societyId}/{$filename}";
+                    }
                 }
             }
 
+            // cdate / udate are only filled when the table has them (Cake fills nothing itself)
+            $hasStamps = isset($columns['cdate']) && isset($columns['udate']);
             if ($params) {
-                $params->update($data);
+                $params->timestamps = $hasStamps;
+                $params->fill($data)->save();
             } else {
-                $data['society_id'] = $societyId;
-                $params = SocietyParameter::create($data);
+                $params = new SocietyParameter();
+                $params->timestamps = $hasStamps;
+                $params->fill($data + ['society_id' => $societyId])->save();
             }
 
-            $orderString = $request->input('sorted_order');
-            if ($orderString) {
-                BillSettlementOrder::updateOrCreate(
-                    ['society_id' => $societyId, 'is_active' => 1],
-                    ['settle_order' => $orderString]
-                );
+            // Cake manageSettlementOrder(): update the society's active order row, or add one
+            $orderString = (string) $request->input('sorted_order', '');
+            if ($orderString !== '') {
+                $order = BillSettlementOrder::where('society_id', $societyId)->where('is_active', 1)->first();
+                $order = $order ?: new BillSettlementOrder(['society_id' => $societyId, 'is_active' => 1]);
+                $order->timestamps = Schema::hasColumn('bill_settlement_order', 'updated_at');
+                $order->settle_order = $orderString;
+                $order->save();
             }
 
             return redirect()->route('society.parameters')->with('success', 'Society parameter has been set successfully.');
         }
 
-        $billingFrequencies = BillingFrequency::all();
-        $interestTypes = InterestType::all();
-        $interestMethods = InterestMethod::all();
-        $tariffTypes = TariffType::all();
+        // Cake lists only the Active rows, sorted by name
+        $activeList = function (string $class, string $table, string $orderBy) {
+            $q = $class::query();
+            if (Schema::hasColumn($table, 'status')) {
+                $q->where('status', 1);
+            }
+            return $q->orderBy($orderBy)->get();
+        };
+        $billingFrequencies = $activeList(BillingFrequency::class, (new BillingFrequency())->getTable(), 'frequency_type');
+        $interestTypes = $activeList(InterestType::class, (new InterestType())->getTable(), 'interest_type');
+        $interestMethods = $activeList(InterestMethod::class, (new InterestMethod())->getTable(), 'method_title');
+        $tariffTypes = $activeList(TariffType::class, (new TariffType())->getTable(), 'tariff_type');
 
         $settlementOrder = BillSettlementOrder::where('society_id', $societyId)->where('is_active', 1)->value('settle_order');
         $settleOrder = $settlementOrder ? explode(',', $settlementOrder) : ['Tax', 'Interest', 'Principle'];
@@ -173,9 +202,24 @@ class SocietyModuleController extends Controller
             $orderMap[$component] = $idx + 1;
         }
 
+        // Cake saved the full server path of the images; show them from the img/... part (as Cake's strchr did)
+        $imageUrl = function ($path) {
+            $path = (string) $path;
+            if ($path === '') {
+                return '';
+            }
+            foreach (['society_signature', 'payment_scanner'] as $folder) {
+                $pos = strpos($path, $folder);
+                if ($pos !== false) {
+                    return asset('img/' . substr($path, $pos));
+                }
+            }
+            return asset(ltrim($path, '/'));
+        };
+
         return view('society.modules.parameters', compact(
             'society', 'params', 'billingFrequencies', 'interestTypes', 'interestMethods', 'tariffTypes',
-            'hasCurrentBillUpdateColumn', 'orderMap'
+            'hasCurrentBillUpdateColumn', 'orderMap', 'imageUrl'
         ));
     }
 
