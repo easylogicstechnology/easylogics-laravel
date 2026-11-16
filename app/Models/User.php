@@ -49,6 +49,23 @@ class User extends Authenticatable
         return $this->hasMany(UserLogin::class, 'user_id');
     }
 
+    /**
+     * Roles are compared as 'Admin', 'Society', 'Reseller', 'SubReseller', 'Member' everywhere, but older
+     * (CakePHP) rows can hold them in another case or with spaces, e.g. 'admin'. Such a login used to bounce
+     * back to the login page with no message. Read the role in its canonical spelling; the row is unchanged.
+     */
+    public function getRoleAttribute($value)
+    {
+        if (!is_string($value)) {
+            return $value;
+        }
+        $canonical = ['admin' => 'Admin', 'society' => 'Society', 'reseller' => 'Reseller',
+            'subreseller' => 'SubReseller', 'member' => 'Member'];
+        $key = strtolower(str_replace([' ', '_', '-'], '', $value));
+
+        return $canonical[$key] ?? trim($value);
+    }
+
     public function isAdmin(): bool
     {
         return $this->role === 'Admin';
