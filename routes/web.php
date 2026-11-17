@@ -317,7 +317,13 @@ Route::middleware(['auth', EnsureRole::class . ':Society'])->prefix('society')->
     Route::post('/download-member-tariff-data', [SocietyModuleController::class, 'downloadMemberTariffData'])->name('society.downloadMemberTariffData');
     Route::get('/get-wings-by-building', [SocietyModuleController::class, 'getWingsByBuilding'])->name('society.getWings');
     Route::post('/get-all-member-tariff-details', [SocietyModuleController::class, 'getAllMemberTariffDetails'])->name('society.getAllMemberTariffDetails');
-    Route::post('/update-all-member-tariff-details', [SocietyModuleController::class, 'updateAllMemberTariffDetails'])->name('society.updateAllMemberTariffDetails');
+    Route::post('/update-all-member-tariff-details', [SocietyModuleController::class, 'updateAllMemberTariffDetails'])->name('society.updateAllMemberTariffDetails')->middleware(CheckSubResellerModule::class . ':mm_membertariff,add|edit,json');
+    // All Member's Tariff header controls + Bulk Paste Tariff (CakePHP societys_ajax/*LedgerHead*ForAllMembers, societys_members/bulk_paste_tariff)
+    Route::post('/member-tariff/head-active', [SocietyModuleController::class, 'toggleLedgerHeadActive'])->name('society.tariffHeadActive')->middleware(CheckSubResellerModule::class . ':mm_membertariff,edit,json');
+    Route::post('/member-tariff/head-adjust', [SocietyModuleController::class, 'adjustLedgerHeadAmount'])->name('society.tariffHeadAdjust')->middleware(CheckSubResellerModule::class . ':mm_membertariff,edit,json');
+    Route::post('/member-tariff/head-set', [SocietyModuleController::class, 'setLedgerHeadAmount'])->name('society.tariffHeadSet')->middleware(CheckSubResellerModule::class . ':mm_membertariff,edit,json');
+    Route::get('/member-tariff/bulk-paste', [SocietyModuleController::class, 'bulkPasteTariff'])->name('society.bulkPasteTariff')->middleware(CheckSubResellerModule::class . ':mm_membertariff,add|edit');
+    Route::post('/member-tariff/bulk-paste', [SocietyModuleController::class, 'saveBulkPasteTariff'])->name('society.saveBulkPasteTariff')->middleware(CheckSubResellerModule::class . ':mm_membertariff,add|edit,json');
     Route::get('/tenant-member-identity', [SocietyModuleController::class, 'tenantMemberIdentity'])->name('society.tenantMemberIdentity');
     Route::match(['get', 'post'], '/tenant-member-identity/add/{id?}', [SocietyModuleController::class, 'addTenant'])->name('society.addTenant');
     Route::delete('/tenant-member-identity/{id}', [SocietyModuleController::class, 'deleteTenant'])->name('society.deleteTenant');

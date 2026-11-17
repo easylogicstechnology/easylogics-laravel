@@ -2404,8 +2404,16 @@ class SocietyModuleController extends Controller
             ];
         }
 
+        // CakePHP inactiveHeadIds: a head with at least one inactive row shows its header "Active" box unticked
+        $hasActiveColumn = $this->memberTariffHasActiveColumn();
+        $inactiveHeadIds = $hasActiveColumn
+            ? MemberTariff::where('society_id', $societyId)->where('is_active', 0)->distinct()->pluck('ledger_head_id')->map(fn ($id) => (int) $id)->values()->all()
+            : [];
+
         return response()->json([
             'ledger_heads' => $ledgerHeads->map(fn($lh) => ['id' => $lh->id, 'title' => $lh->title]),
+            'has_active_column' => $hasActiveColumn,
+            'inactive_head_ids' => $inactiveHeadIds,
             'members' => $memberTariffData,
             'ledger_totals' => $ledgerTotals,
             'grand_total' => number_format(array_sum($ledgerTotals), 2, '.', ''),
@@ -2415,11 +2423,24 @@ class SocietyModuleController extends Controller
     public function updateAllMemberTariffDetails(Request $request)
     {
         $societyId = $this->societyId();
-        $tariffData = $request->input('MemberTariff', []);
+        $tariffData = (array) $request->input('MemberTariff', []);
         $failCnt = 0;
 
+        // CakePHP: member ids and ledger head ids come from the browser, society_id from the session - accept only this
+        // society's own members and heads, otherwise a row is saved for another society's member (wrong tag, double charges).
+        $ownMembers = array_flip(Member::where('society_id', $societyId)->pluck('id')->map(fn ($id) => (string) $id)->all());
+        $ownHeads = array_flip(SocietyLedgerHead::where('society_id', $societyId)->pluck('id')->map(fn ($id) => (string) $id)->all());
+        $skipped = 0;
+        $saved = 0;
+
         foreach ($tariffData as $memberId => $ledgerAmounts) {
-            foreach ($ledgerAmounts as $ledgerHeadId => $amount) {
+            foreach ((array) $ledgerAmounts as $ledgerHeadId => $amount) {
+                if (!isset($ownMembers[(string) $memberId]) || !isset($ownHeads[(string) $ledgerHeadId])) {
+                    $skipped++;
+                    continue;
+                }
+                $amount = trim(str_replace(',', '', (string) $amount));
+                $amount = is_numeric($amount) ? $amount : 0;
                 $serialOrder = SocietyTariffOrder::where('society_id', $societyId)
                     ->where('ledger_head_id', $ledgerHeadId)->first();
 
@@ -2427,21 +2448,202 @@ class SocietyModuleController extends Controller
                     MemberTariff::updateOrCreate(
                         ['society_id' => $societyId, 'member_id' => $memberId, 'ledger_head_id' => $ledgerHeadId],
                         [
-                            'amount' => $amount ?? 0,
+                            'amount' => $amount,
                             'tariff_serial' => $serialOrder->tariff_serial ?? null,
                             'updated_date' => now(),
                         ]
                     );
+                    $saved++;
                 } catch (\Exception $e) {
+                    report($e);
                     $failCnt++;
                 }
             }
         }
 
-        if ($failCnt > 0) {
-            return response()->json(['error' => 1, 'error_message' => 'The member tariff could not be saved. Please, try again.']);
+        $skipNote = $skipped > 0 ? ' ' . $skipped . ' value(s) were skipped because the member or ledger head does not belong to this society.' : '';
+        if ($failCnt > 0 || ($saved === 0 && $skipped > 0)) {
+            return response()->json(['error' => 1, 'error_message' => trim(($failCnt > 0 ? 'The member tariff could not be saved. Please, try again.' : '') . $skipNote)]);
         }
-        return response()->json(['error' => 0, 'error_message' => 'The member tariff has been Updated.']);
+        return response()->json(['error' => 0, 'error_message' => 'The member tariff has been Updated.' . $skipNote]);
+    }
+
+    /** member_tariffs.is_active exists on databases that ran the CakePHP "inactive head" change; older copies lack it. */
+    private function memberTariffHasActiveColumn(): bool
+    {
+        static $has = null;
+
+        return $has ??= Schema::hasColumn('member_tariffs', 'is_active');
+    }
+
+    /** Ledger head id posted by the All Member's Tariff header controls, only when it is one of this society's heads. */
+    private function ownLedgerHeadId(Request $request, $societyId): int
+    {
+        $id = (int) $request->input('ledger_head_id', 0);
+
+        return ($id > 0 && SocietyLedgerHead::where('society_id', $societyId)->where('id', $id)->exists()) ? $id : 0;
+    }
+
+    /**
+     * CakePHP SocietysAjax::toggleLedgerHeadActiveForAllMembers: the header "Active" box (de)activates one head for EVERY
+     * member at once. Only future Generate Bill runs skip an inactive head; bills already generated are never touched.
+     */
+    public function toggleLedgerHeadActive(Request $request)
+    {
+        $societyId = $this->societyId();
+        if (!$this->memberTariffHasActiveColumn()) {
+            return response()->json(['error' => 1, 'error_message' => 'This database has no member_tariffs.is_active column yet, so a head cannot be switched off.']);
+        }
+        $ledgerHeadId = $this->ownLedgerHeadId($request, $societyId);
+        if (!$ledgerHeadId) {
+            return response()->json(['error' => 1, 'error_message' => 'Ledger head not specified.']);
+        }
+        $isActive = $request->boolean('is_active') ? 1 : 0;
+        MemberTariff::where('society_id', $societyId)->where('ledger_head_id', $ledgerHeadId)->update(['is_active' => $isActive]);
+
+        return response()->json(['error' => 0, 'error_message' => $isActive
+            ? 'This head is now active for all members.'
+            : 'This head is now inactive for all members. Already generated bills are not affected; it will be skipped from the next bill.']);
+    }
+
+    /**
+     * CakePHP SocietysAjax::adjustLedgerHeadAmountForAllMembers: "+ Add" / "- Less" a flat amount on one head for every
+     * member who already has a rate for it (a 0 rate means the head does not apply, so it is left alone; never below 0).
+     */
+    public function adjustLedgerHeadAmount(Request $request)
+    {
+        $societyId = $this->societyId();
+        $ledgerHeadId = $this->ownLedgerHeadId($request, $societyId);
+        $mode = (string) $request->input('mode', '');
+        $raw = trim(str_replace(',', '', (string) $request->input('amount', '')));
+        if (!$ledgerHeadId) {
+            return response()->json(['error' => 1, 'error_message' => 'Ledger head not specified.']);
+        }
+        if (!in_array($mode, ['add', 'less'], true)) {
+            return response()->json(['error' => 1, 'error_message' => 'Invalid mode.']);
+        }
+        if ($raw === '' || !is_numeric($raw) || (float) $raw <= 0) {
+            return response()->json(['error' => 1, 'error_message' => 'Enter a valid amount greater than 0.']);
+        }
+        $delta = round((float) $raw, 2);
+        $rows = MemberTariff::where('society_id', $societyId)->where('ledger_head_id', $ledgerHeadId)->where('amount', '<>', 0);
+        if ($mode === 'add') {
+            $rows->update(['amount' => DB::raw('amount + ' . $delta), 'updated_date' => now()]);
+
+            return response()->json(['error' => 0, 'error_message' => 'Added Rs.' . $delta . ' to this head for members who already have a rate for it (0-rate members untouched).']);
+        }
+        $rows->update(['amount' => DB::raw('GREATEST(amount - ' . $delta . ', 0)'), 'updated_date' => now()]);
+
+        return response()->json(['error' => 0, 'error_message' => 'Subtracted Rs.' . $delta . ' from this head for members who already have a rate for it (0-rate members untouched).']);
+    }
+
+    /** CakePHP SocietysAjax::setLedgerHeadAmountForAllMembers: "= Set Actual" one exact amount for every member who has the head. */
+    public function setLedgerHeadAmount(Request $request)
+    {
+        $societyId = $this->societyId();
+        $ledgerHeadId = $this->ownLedgerHeadId($request, $societyId);
+        $raw = trim(str_replace(',', '', (string) $request->input('amount', '')));
+        if (!$ledgerHeadId) {
+            return response()->json(['error' => 1, 'error_message' => 'Ledger head not specified.']);
+        }
+        if ($raw === '' || !is_numeric($raw) || (float) $raw < 0) {
+            return response()->json(['error' => 1, 'error_message' => 'Enter a valid amount (0 or more).']);
+        }
+        $amount = round((float) $raw, 2);
+        MemberTariff::where('society_id', $societyId)->where('ledger_head_id', $ledgerHeadId)->update(['amount' => $amount, 'updated_date' => now()]);
+
+        return response()->json(['error' => 0, 'error_message' => 'Set this head to Rs.' . $amount . ' for all members who have it.']);
+    }
+
+    /** Heads of the tariff screens, in the same order as CakePHP (tariff order when the society has one, else bill heads by title). */
+    private function tariffLedgerHeads($societyId)
+    {
+        if (SocietyTariffOrder::where('society_id', $societyId)->exists()) {
+            return SocietyTariffOrder::where('society_tariff_orders.society_id', $societyId)
+                ->join('society_ledger_heads', 'society_tariff_orders.ledger_head_id', '=', 'society_ledger_heads.id')
+                ->where('society_ledger_heads.status', 1)
+                ->where('society_ledger_heads.society_id', $societyId)
+                ->orderBy('society_tariff_orders.id', 'asc')
+                ->select('society_ledger_heads.id', 'society_ledger_heads.title')
+                ->get();
+        }
+
+        return SocietyLedgerHead::where('society_id', $societyId)->where('status', 1)->where('is_in_bill_charges', 1)
+            ->orderBy('title')->get(['id', 'title']);
+    }
+
+    /** CakePHP SocietysMembers::bulk_paste_tariff - paste rows from Excel (Flat Number + one column per head). */
+    public function bulkPasteTariff()
+    {
+        $societyId = $this->societyId();
+        $ledgerHeads = $this->tariffLedgerHeads($societyId);
+        $validFlats = Member::where('society_id', $societyId)->where('status', 1)->pluck('flat_no')
+            ->map(fn ($f) => (string) $f)->filter(fn ($f) => $f !== '')->values()->all();
+
+        return view('society.modules.bulk-paste-tariff', compact('ledgerHeads', 'validFlats'));
+    }
+
+    /**
+     * CakePHP SocietysMembers::save_bulk_paste_tariff: each row = flat number + amounts per head id. A blank cell leaves that
+     * head untouched; only this society's active members (by flat number) and its own active heads are accepted.
+     */
+    public function saveBulkPasteTariff(Request $request)
+    {
+        $societyId = $this->societyId();
+        $rows = (array) $request->input('rows', []);
+        $validHeads = array_flip(SocietyLedgerHead::where('society_id', $societyId)->where('status', 1)->pluck('id')->map(fn ($id) => (string) $id)->all());
+        $flatToMember = [];
+        foreach (Member::where('society_id', $societyId)->where('status', 1)->orderBy('id')->get(['id', 'flat_no']) as $m) {
+            $flatToMember[(string) $m->flat_no] ??= (int) $m->id;
+        }
+        $hasActive = $this->memberTariffHasActiveColumn();
+        $serials = [];
+        $results = [];
+        $added = 0;
+        $failed = 0;
+
+        foreach ($rows as $index => $row) {
+            $flatNo = trim((string) ($row['flat_number'] ?? ''));
+            $errors = [];
+            if ($flatNo === '') {
+                $errors[] = 'Flat Number required';
+            } elseif (!isset($flatToMember[$flatNo])) {
+                $errors[] = 'Flat Number not found: ' . $flatNo;
+            }
+            $savedHeads = 0;
+            if (!$errors) {
+                $memberId = $flatToMember[$flatNo];
+                foreach ((array) ($row['heads'] ?? []) as $ledgerHeadId => $amount) {
+                    $amount = trim(str_replace(',', '', (string) $amount));
+                    if ($amount === '' || !is_numeric($amount) || !isset($validHeads[(string) $ledgerHeadId])) {
+                        continue;
+                    }
+                    $serials[$ledgerHeadId] ??= SocietyTariffOrder::where('society_id', $societyId)->where('ledger_head_id', $ledgerHeadId)->value('tariff_serial');
+                    $values = ['amount' => $amount, 'tariff_serial' => $serials[$ledgerHeadId], 'updated_date' => now()];
+                    if ($hasActive) {
+                        $values['is_active'] = 1;
+                    }
+                    try {
+                        MemberTariff::updateOrCreate(['society_id' => $societyId, 'member_id' => $memberId, 'ledger_head_id' => (int) $ledgerHeadId], $values);
+                        $savedHeads++;
+                    } catch (\Exception $e) {
+                        report($e);
+                    }
+                }
+                if ($savedHeads === 0) {
+                    $errors[] = 'No valid rate values in this row';
+                }
+            }
+            if ($errors) {
+                $failed++;
+                $results[] = ['row' => $index, 'status' => 'error', 'errors' => $errors];
+                continue;
+            }
+            $added++;
+            $results[] = ['row' => $index, 'status' => 'success', 'saved_heads' => $savedHeads];
+        }
+
+        return response()->json(['success' => true, 'added' => $added, 'failed' => $failed, 'total' => count($rows), 'results' => $results]);
     }
 
     public function tenantMemberIdentity()

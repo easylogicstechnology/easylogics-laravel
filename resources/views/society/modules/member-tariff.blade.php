@@ -3,7 +3,10 @@
 @section('content')
 <div class="page-header">
     <h2>Regular Bill Tariff Master</h2>
-    <a href="{{ route('society.memberTariffUpload') }}" class="btn btn-sm" style="background:#f0ad4e; color:#fff;">Upload Member Tariff CSV</a>
+    <div>
+        <a href="{{ route('society.bulkPasteTariff') }}" class="btn btn-sm" style="background:#5bc0de; color:#fff; margin-right:6px;" title="Paste Excel data to set many members' tariff at once">Bulk Paste Tariff</a>
+        <a href="{{ route('society.memberTariffUpload') }}" class="btn btn-sm" style="background:#f0ad4e; color:#fff;">Upload Member Tariff CSV</a>
+    </div>
 </div>
 
 <div class="card">
@@ -181,8 +184,8 @@ function getAllBuildingWings(buildingId) {
 }
 
 function loadAllMemberTariff() {
+    // CakePHP: no building chosen = every member of the society
     var buildingId = document.getElementById('allBuildingId').value;
-    if (!buildingId) { alert('Select a building'); return; }
     var wingId = document.getElementById('allWingId').value;
     document.getElementById('allMemberTariffData').innerHTML = '<p style="color:#999;">Loading...</p>';
     document.getElementById('allMemberUpdateBtn').style.display = 'none';
@@ -197,6 +200,8 @@ function loadAllMemberTariff() {
         var heads = data.ledger_heads;
         var members = data.members;
         var totals = data.ledger_totals;
+        var inactive = {};
+        (data.inactive_head_ids || []).forEach(function(id) { inactive[id] = true; });
 
         var html = '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
         html += '<thead><tr style="background:#e9ecef;">';
@@ -204,7 +209,16 @@ function loadAllMemberTariff() {
         html += '<th style="padding:4px; border:1px solid #ddd;">MEMBER NAME</th>';
         html += '<th style="padding:4px; border:1px solid #ddd;">Flat No</th>';
         for (var h = 0; h < heads.length; h++) {
-            html += '<th style="padding:4px; border:1px solid #ddd; white-space:nowrap;">' + heads[h].title + '</th>';
+            // CakePHP get_all_member_tariff_details.ctp: per-head Active toggle, + Add / - Less, = Set Actual (for ALL members)
+            var hid = heads[h].id, ht = escHtml(heads[h].title);
+            html += '<th style="padding:4px; border:1px solid #ddd; vertical-align:top; font-size:12px;">' + ht + '<br>';
+            if (data.has_active_column) {
+                html += '<label style="font-weight:normal; font-size:10px; white-space:nowrap;" title="Untick to stop billing this head for ALL members from the next bill. Already generated bills are not affected.">'
+                    + '<input type="checkbox" onchange="toggleHeadActive(this, ' + hid + ')" data-title="' + ht + '"' + (inactive[hid] ? '' : ' checked') + '> Active</label><br>';
+            }
+            html += '<a href="#" onclick="adjustHead(' + hid + ', \'add\', this); return false;" data-title="' + ht + '" style="font-size:10px; color:#137333; text-decoration:none;" title="Add a flat amount to this head for ALL members at once">+ Add</a>'
+                + ' / <a href="#" onclick="adjustHead(' + hid + ', \'less\', this); return false;" data-title="' + ht + '" style="font-size:10px; color:#c5221f; text-decoration:none;" title="Subtract a flat amount from this head for ALL members at once">&minus; Less</a><br>'
+                + '<a href="#" onclick="setHead(' + hid + ', this); return false;" data-title="' + ht + '" style="font-size:10px; color:#1a73e8; text-decoration:none;" title="Set this head to one exact amount for ALL members at once">= Set Actual</a></th>';
         }
         html += '<th style="padding:4px; border:1px solid #ddd;">Total</th>';
         html += '</tr></thead><tbody>';
@@ -213,11 +227,11 @@ function loadAllMemberTariff() {
             var m = members[i];
             html += '<tr>';
             html += '<td style="padding:4px; border:1px solid #ddd;">' + (i + 1) + '</td>';
-            html += '<td style="padding:4px; border:1px solid #ddd;">' + m.member_name + '</td>';
-            html += '<td style="padding:4px; border:1px solid #ddd;">' + m.flat_no + '</td>';
+            html += '<td style="padding:4px; border:1px solid #ddd;">' + escHtml(m.member_name) + '</td>';
+            html += '<td style="padding:4px; border:1px solid #ddd;">' + escHtml(m.flat_no) + '</td>';
             for (var h = 0; h < heads.length; h++) {
                 var amt = m.ledger_data[heads[h].id] || '0.00';
-                html += '<td style="padding:2px; border:1px solid #ddd;">';
+                html += '<td class="tariff-cell-' + heads[h].id + '" style="padding:2px; border:1px solid #ddd;' + (inactive[heads[h].id] ? ' background:#fbe9e7;' : '') + '">';
                 html += '<input type="text" name="MemberTariff[' + m.member_id + '][' + heads[h].id + ']" value="' + amt + '" style="width:70px; text-align:right; border:1px solid #ccc; padding:2px;" class="allTariffInput" data-member="' + m.member_id + '" data-ledger="' + heads[h].id + '" oninput="recalcRow(this)">';
                 html += '</td>';
             }
@@ -225,6 +239,10 @@ function loadAllMemberTariff() {
             html += '</tr>';
         }
 
+        if (!members.length) {
+            html += '<tr><td colspan="' + (heads.length + 4) + '" style="padding:8px; text-align:center; color:#999;">No active members found'
+                + (buildingId ? ' in this building / wing. Choose "Select building" to see every member.' : '.') + '</td></tr>';
+        }
         html += '<tr style="background:#f5f5f5; font-weight:bold;">';
         html += '<td style="padding:4px; border:1px solid #ddd;"></td>';
         html += '<td style="padding:4px; border:1px solid #ddd;">Grand Total</td>';
@@ -241,6 +259,65 @@ function loadAllMemberTariff() {
         document.getElementById('allMemberTariffData').innerHTML = html;
         document.getElementById('allMemberUpdateBtn').style.display = '';
     });
+}
+
+function escHtml(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
+}
+
+function tariffPost(url, payload) {
+    return fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}'},
+        body: JSON.stringify(payload)
+    }).then(function(r) { return r.json(); });
+}
+
+function toggleHeadActive(box, headId) {
+    var isActive = box.checked, title = box.getAttribute('data-title');
+    if (!confirm((isActive ? 'Activate' : 'Deactivate') + ' "' + title + '" for ALL members?\n\n' +
+        (isActive ? 'It will be billed for every member again from the next bill.' : "It will be excluded from every member's next bill. Already generated bills are not affected."))) {
+        box.checked = !isActive;
+        return;
+    }
+    box.disabled = true;
+    tariffPost('{{ route("society.tariffHeadActive") }}', {ledger_head_id: headId, is_active: isActive ? 1 : 0})
+        .then(function(resp) {
+            box.disabled = false;
+            if (resp.error === 0) {
+                document.querySelectorAll('.tariff-cell-' + headId).forEach(function(td) { td.style.background = isActive ? '' : '#fbe9e7'; });
+            } else {
+                box.checked = !isActive;
+            }
+            alert(resp.error_message || resp.message || 'Could not update.');
+        })
+        .catch(function() { box.disabled = false; box.checked = !isActive; alert('Server error. Please try again.'); });
+}
+
+function adjustHead(headId, mode, link) {
+    var title = link.getAttribute('data-title');
+    var amountStr = prompt((mode === 'add' ? 'Add' : 'Subtract') + ' how much to "' + title + '" for ALL members?\n(e.g. 50)');
+    if (amountStr === null) return;
+    amountStr = amountStr.toString().trim().replace(/,/g, '');
+    var amount = parseFloat(amountStr);
+    if (amountStr === '' || isNaN(amount) || amount <= 0) { alert('Enter a valid amount greater than 0.'); return; }
+    if (!confirm((mode === 'add' ? 'Add Rs.' + amount + ' to' : 'Subtract Rs.' + amount + ' from') + ' "' + title + '" for all members who already have a rate for it?\n\nMembers currently at Rs.0 for this head will be left untouched.')) return;
+    tariffPost('{{ route("society.tariffHeadAdjust") }}', {ledger_head_id: headId, mode: mode, amount: amount})
+        .then(function(resp) { alert(resp.error_message || resp.message || 'Could not update.'); if (resp.error === 0) loadAllMemberTariff(); })
+        .catch(function() { alert('Server error. Please try again.'); });
+}
+
+function setHead(headId, link) {
+    var title = link.getAttribute('data-title');
+    var amountStr = prompt('Set "' + title + '" to what exact amount for ALL members?\n(e.g. 500)');
+    if (amountStr === null) return;
+    amountStr = amountStr.toString().trim().replace(/,/g, '');
+    var amount = parseFloat(amountStr);
+    if (amountStr === '' || isNaN(amount) || amount < 0) { alert('Enter a valid amount (0 or more).'); return; }
+    if (!confirm('Set "' + title + '" to Rs.' + amount + ' for ALL members?\n\nThis overwrites the current rate for everyone who has this head - it does not add or subtract.')) return;
+    tariffPost('{{ route("society.tariffHeadSet") }}', {ledger_head_id: headId, amount: amount})
+        .then(function(resp) { alert(resp.error_message || resp.message || 'Could not update.'); if (resp.error === 0) loadAllMemberTariff(); })
+        .catch(function() { alert('Server error. Please try again.'); });
 }
 
 function recalcRow(input) {
@@ -291,12 +368,9 @@ function updateAllMemberTariff() {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.error === 0) {
-            alert(data.error_message);
-        } else {
-            alert(data.error_message);
-        }
-    });
+        alert(data.error_message || data.message || 'Could not save.');
+    })
+    .catch(function() { alert('Server error. Please try again.'); });
 }
 </script>
 @endsection

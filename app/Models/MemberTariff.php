@@ -19,6 +19,7 @@ class MemberTariff extends Model
         'financial_year_id',
         'updated_date',
         'status',
+        'is_active',
     ];
 
     public function member()
