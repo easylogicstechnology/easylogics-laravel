@@ -62,6 +62,13 @@ Route::post('/logout', [LoginController::class, 'logout'])
     ->middleware('auth')
     ->name('logout');
 
+// My Account: my e-mail for password reset + change my own password (any logged-in user, not while a reseller works inside a society)
+Route::middleware('auth')->group(function () {
+    Route::get('/account/password', [\App\Http\Controllers\Auth\ChangePasswordController::class, 'show'])->name('account.password');
+    Route::post('/account/password', [\App\Http\Controllers\Auth\ChangePasswordController::class, 'update'])->name('account.password.update');
+    Route::post('/account/email', [\App\Http\Controllers\Auth\ChangePasswordController::class, 'updateEmail'])->name('account.email.update');
+});
+
 // CakePHP AdminController::dashboard() has no role check of its own: it just sends a Society or a Reseller on to
 // their own dashboard. Every other role is refused here (403) - Cake would show them the admin dashboard.
 Route::middleware('auth')->get('/admin/dashboard', function (\Illuminate\Http\Request $request) {

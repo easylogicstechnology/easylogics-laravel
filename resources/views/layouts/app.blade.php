@@ -224,6 +224,9 @@
                     <button type="submit" style="background:#e67e22; border-color:#e67e22;">Back to Reseller</button>
                 </form>
             @endif
+            @if(!session('reseller_id'))
+            <a href="{{ route('account.password') }}" style="color:#fff; font-size:12px; text-decoration:underline; margin-right:6px;" title="E-mail for password reset, change password">My Account</a>
+            @endif
             <form method="POST" action="{{ route('logout') }}">
                 @csrf
                 <button type="submit">Logout</button>
