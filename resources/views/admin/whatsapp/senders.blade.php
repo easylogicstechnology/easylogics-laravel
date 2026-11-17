@@ -93,6 +93,20 @@
                         @if ($s)
                             <span class="wa-chip wa-{{ $s->status }}">{{ $s->status }}</span>
                             @if ($s->last_error)<br><small style="color:#dc2626;">{{ $s->last_error }}</small>@endif
+                            @if ($s->provider === 'k3' && $s->api_key_enc)
+                                <div style="margin-top:6px; display:flex; gap:4px; flex-wrap:wrap;">
+                                    <form method="POST" action="{{ route('admin.whatsappSenders.k3Webhook', $r->id) }}" onsubmit="return confirm('K3 ko webhook {{ route('whatsapp.webhook') }} set karein? (number {{ $s->sender_phone }})');">
+                                        @csrf
+                                        <input type="hidden" name="action" value="set">
+                                        <button type="submit" class="btn btn-success btn-xs" title="K3 ko batata hai ki Delivered / Read status kahan bhejna hai">Set K3 Webhook</button>
+                                    </form>
+                                    <form method="POST" action="{{ route('admin.whatsappSenders.k3Webhook', $r->id) }}">
+                                        @csrf
+                                        <input type="hidden" name="action" value="get">
+                                        <button type="submit" class="btn btn-default btn-xs" title="K3 mein abhi kaunsa webhook set hai">Check</button>
+                                    </form>
+                                </div>
+                            @endif
                         @else
                             <span class="wa-chip wa-NONE">COMMON API</span>
                         @endif

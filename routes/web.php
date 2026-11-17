@@ -122,6 +122,7 @@ Route::middleware(['auth', EnsureRole::class . ':Admin'])->prefix('admin')->grou
     Route::post('/whatsapp-apis/create-tables', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'migrate'])->name('admin.whatsappSenders.migrate');
     Route::post('/whatsapp-apis/{resellerId}', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'save'])->whereNumber('resellerId')->name('admin.whatsappSenders.save');
     Route::post('/whatsapp-apis/{resellerId}/clear-secret', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'clearSecret'])->whereNumber('resellerId')->name('admin.whatsappSenders.clearSecret');
+    Route::post('/whatsapp-apis/{resellerId}/k3-webhook', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'k3Webhook'])->whereNumber('resellerId')->name('admin.whatsappSenders.k3Webhook');
     // a save URL opened by reload / the address bar (GET) shows the list instead of a 405 page
     Route::get('/whatsapp-apis/create-tables', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'index']);
     Route::get('/whatsapp-apis/{resellerId}', [\App\Http\Controllers\Admin\WhatsAppSenderController::class, 'index'])->whereNumber('resellerId');

@@ -9,6 +9,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -153,6 +155,55 @@ class WhatsAppSenderController extends Controller
         }
 
         return redirect()->route('admin.whatsappSenders')->with('success', 'WhatsApp tables ready. ' . preg_replace('/\s+/', ' ', implode(' ', $out)));
+    }
+
+    /**
+     * K3 Partners API "SET WEBHOOK" / "GET WEBHOOK" (K3 Partners API documentation p.103-105):
+     * POST https://partners.pinbot.ai/v2/setwebhooks {webhook_url, headers}, GET .../getwebhooks, with the headers
+     * "apikey" (the WABA API key) and "wanumber" (the WABA number). Without this K3 never sends Delivered / Read.
+     * When the reseller has a webhook secret, it is registered as the custom header X-Webhook-Secret, which the webhook checks.
+     */
+    public function k3Webhook(Request $request, int $resellerId)
+    {
+        $back = redirect()->route('admin.whatsappSenders');
+        $row = $this->tableReady() ? DB::table('reseller_whatsapp_senders')->where('reseller_id', $resellerId)->first() : null;
+        if (!$row || $row->provider !== 'k3') {
+            return $back->with('error', 'This reseller has no K3 WhatsApp API saved.');
+        }
+        $key = (string) WhatsAppSenders::decrypt($row->api_key_enc);
+        if ($key === '') {
+            return $back->with('error', 'The saved K3 API key cannot be read - save the API key again.');
+        }
+        $headers = ['apikey' => $key, 'wanumber' => (string) $row->sender_phone, 'Content-Type' => 'application/json'];
+        $webhookUrl = route('whatsapp.webhook');
+        if (!str_starts_with($webhookUrl, 'https://')) {
+            return $back->with('error', 'The webhook URL must be https (APP_URL): ' . $webhookUrl);
+        }
+
+        try {
+            if ($request->input('action') === 'get') {
+                $resp = Http::withHeaders($headers)->timeout(20)->get('https://partners.pinbot.ai/v2/getwebhooks');
+                $url = (string) (data_get($resp->json(), 'webhook_url') ?? '');
+
+                return $back->with($resp->successful() ? 'success' : 'error', 'K3 webhook for ' . $row->sender_phone . ': '
+                    . ($url !== '' ? $url . ($url === $webhookUrl ? ' (correct)' : ' - NOT our URL, click "Set K3 Webhook"') : 'none set')
+                    . ' | K3 said (HTTP ' . $resp->status() . '): ' . mb_substr($resp->body(), 0, 300));
+            }
+
+            $body = ['webhook_url' => $webhookUrl];
+            $secret = (string) WhatsAppSenders::decrypt($row->webhook_secret_enc);
+            if ($secret !== '') {
+                $body['headers'] = ['X-Webhook-Secret' => $secret];
+            }
+            $resp = Http::withHeaders($headers)->timeout(20)->post('https://partners.pinbot.ai/v2/setwebhooks', $body);
+        } catch (\Throwable $e) {
+            return $back->with('error', 'Could not reach K3: ' . mb_substr($e->getMessage(), 0, 200));
+        }
+        Log::warning('K3 setwebhooks for reseller ' . $resellerId . ' (' . $row->sender_phone . '): HTTP ' . $resp->status() . ' ' . mb_substr($resp->body(), 0, 300));
+        $ok = $resp->successful() && stripos($resp->body(), 'success') !== false;
+
+        return $back->with($ok ? 'success' : 'error', ($ok ? 'K3 webhook set to ' . $webhookUrl . ' for ' . $row->sender_phone . '. Send a new bill - Delivered / Read will now come in.' : 'K3 did not accept the webhook.')
+            . ' K3 said (HTTP ' . $resp->status() . '): ' . mb_substr($resp->body(), 0, 300));
     }
 
     /** Remove the saved webhook secret (the key is changed by typing a new one). */
