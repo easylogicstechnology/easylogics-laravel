@@ -5,6 +5,13 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
 
+// Server-only settings (mail password, session path...) live in .env.secrets: gitignored, so the deploy's
+// `git reset --hard` never overwrites it and no password ends up in the repository. Loaded first and immutable,
+// so a value here wins over the same key in the tracked .env / .env.production.
+if (is_file(dirname(__DIR__).'/.env.secrets')) {
+    Dotenv\Dotenv::createImmutable(dirname(__DIR__), '.env.secrets')->safeLoad();
+}
+
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',

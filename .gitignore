@@ -3,6 +3,7 @@
 .env
 .env.backup
 .env.local
+.env.secrets
 .env.production
 .env.staging
 .env.test
