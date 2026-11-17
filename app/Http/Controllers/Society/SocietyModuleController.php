@@ -2174,7 +2174,8 @@ class SocietyModuleController extends Controller
         if ($request->isMethod('post') && $request->has('member_id')) {
             $memberId = $request->input('member_id');
             $effectiveDate = $request->input('tariff_effective_since', date('Y-m-d'));
-            $remark = $request->input('remark', '');
+            // An empty Remark box arrives as null (ConvertEmptyStringsToNull); member_tariff_details.remark is NOT NULL on live (MySQL 8 strict) -> save ''
+            $remark = (string) $request->input('remark', '');
             $rates = $request->input('rates', []);
 
             foreach ($rates as $ledgerHeadId => $amount) {
