@@ -541,7 +541,7 @@
                         </div>
                         <div class="form-row">
                             <label><input type="checkbox" name="remember_me" value="1"> Keep me logged in</label>
-                            <a href="javascript:void(0)">Forgot password?</a>
+                            <a href="{{ route('password.request') }}">Forgot password?</a>
                         </div>
                         <button type="submit" class="btn btn-primary"><i class="fa fa-sign-in"></i> Sign in</button>
                     </form>
