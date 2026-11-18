@@ -65,6 +65,11 @@ $months = $billingFrequenciesArray[$billingFrequencyId] ?? [];
 </div>
 
 <div class="alert alert-info" style="margin-bottom:10px;">&#128241; WhatsApp is bheja jayega: <strong>{{ $senderLabel }}</strong></div>
+@if (!empty($senderIsK3))
+<div style="margin:-4px 0 10px; padding:6px 10px; font-size:12px; color:#8a6d3b; background:#fcf8e3; border:1px solid #faebcc; border-radius:4px;">
+    &#9432; <b>SENT</b> = message K3 ne le liya. <b>Delivered / Read</b> yahan tabhi dikhega jab K3 apna status webhook chalu kar dega (Admin &rarr; WhatsApp APIs &rarr; Check). Tab tak delivery K3 dashboard mein dekhein.
+</div>
+@endif
 
 <div class="card wa-form">
     <form id="Society_Member_WhatsApp_Bill" name="Society_Member_WhatsApp_Bill" onsubmit="return false;">

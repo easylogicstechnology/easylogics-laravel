@@ -59,6 +59,7 @@ class WhatsAppBillController extends Controller
             'societyBuildingLists' => DB::table('buildings')->where('society_id', $societyId)->orderBy('id')->pluck('building_name', 'id')->all(),
             'billingFrequencyId' => (int) ($params['billing_frequency_id'] ?? 1),
             'senderLabel' => (string) $this->wa()->config('sender', 'Common API'),
+            'senderIsK3' => $this->wa()->config('provider', '') === 'k3',
         ]);
     }
 
